@@ -99,6 +99,7 @@ export interface Params {
   intrinsicW: number; // letter prior per point of letter value
   affordScale: number; // how many tiles we plan to buy = balance / avgPaidPrice * this
   fishFloor: number; // token bid on any useful letter, to pick up cheap tiles when rivals are broke
+  buildW: number; // desirability from letter fit while the rack is too small to have a plan
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -141,6 +142,7 @@ export const DEFAULT_PARAMS: Params = {
   intrinsicW: 1.0,
   affordScale: 1.0,
   fishFloor: 10,
+  buildW: 5,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -343,9 +345,19 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
 let distCacheKey = "";
 let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
 
+// With fewer tiles than a long word minus the allowed missing count, no
+// plan exists yet; rank letters by how well they build toward one.
+function buildTerm(d: Dictionary, c: number, view: MatchView, p: Params): number {
+  const total = rackTotal(view.rack);
+  const full = p.minTargetLen - p.maxMissing; // rack size at which plans appear
+  const fade = total <= full ? 1 : Math.max(0, 1 - (total - full) / 4);
+  if (fade <= 0) return 0;
+  return p.buildW * fade * letterFit(d, view.rack, c, view, p);
+}
+
 function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, intrinsicW: number): number {
   const after = evaluateRack(d, rackAdd(view.rack, c), view, p).value;
-  return Math.max(0, after - baseValue) + intrinsicW * LETTER_VALUE[c]!;
+  return Math.max(0, after - baseValue) + intrinsicW * (LETTER_VALUE[c]! + buildTerm(d, c, view, p));
 }
 
 function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number, intrinsicW: number): number {
@@ -391,7 +403,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // word) only matters while we can still afford to build; when the purse
   // is down to a tile or two, only completing a plan counts.
   const intrinsicW = p.intrinsicW * Math.min(1, affordable / 4);
-  const des = marginal + intrinsicW * LETTER_VALUE[c]!;
+  const des = marginal + intrinsicW * (LETTER_VALUE[c]! + buildTerm(d, c, view, p));
   const fraction = Math.max(0.05, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
   const threshold = desirabilityThreshold(d, view, p, baseValue, fraction, intrinsicW);
   const scale = moneyScale(view, p);

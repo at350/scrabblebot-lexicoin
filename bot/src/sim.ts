@@ -282,13 +282,15 @@ export function summarize(results: MatchResult[], ourIdx: number): Summary {
 // Calibrated to observed top bids in live matches among strong bots:
 // vowels ~13-15, 3-4 point letters ~19-22, K/J/X ~26-33, Q/Z ~35-37.
 export function strongField(params: Params): OpponentKind[] {
+  // Real bots bid on roughly half the auctions and keep coins for the
+  // whole match, so second prices hold at ~10-12 throughout.
   return [
     { kind: "ours", params },
-    { kind: "model", name: "floor13", a: 11, b: 2.3, sigma: 3, skip: 0.08, completeBoost: 0.5 },
-    { kind: "model", name: "premium", a: 9, b: 3.0, sigma: 3, skip: 0.08, completeBoost: 0.8 },
-    { kind: "model", name: "flat", a: 13, b: 1.6, sigma: 2.5, skip: 0.12, completeBoost: 0.3 },
-    { kind: "model", name: "hunter", a: 8, b: 2.4, sigma: 3.5, skip: 0.15, completeBoost: 1.2 },
-    { kind: "model", name: "steady", a: 12, b: 2.0, sigma: 2, skip: 0.05, completeBoost: 0.6 },
+    { kind: "model", name: "floor13", a: 12, b: 2.3, sigma: 3, skip: 0.45, completeBoost: 0.6 },
+    { kind: "model", name: "premium", a: 10, b: 3.0, sigma: 3, skip: 0.5, completeBoost: 0.9 },
+    { kind: "model", name: "flat", a: 14, b: 1.6, sigma: 2.5, skip: 0.4, completeBoost: 0.4 },
+    { kind: "model", name: "hunter", a: 9, b: 2.4, sigma: 3.5, skip: 0.55, completeBoost: 1.3 },
+    { kind: "model", name: "steady", a: 13, b: 2.0, sigma: 2, skip: 0.35, completeBoost: 0.7 },
   ];
 }
 
