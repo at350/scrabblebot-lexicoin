@@ -41,6 +41,9 @@ const BOT_NONCE = process.env.BOT_NONCE;
 const TOURNAMENT_ID = process.env.TOURNAMENT_ID;
 const AUTO_REGISTER = (process.env.AUTO_REGISTER ?? "1") !== "0";
 const AUTO_LOBBY = (process.env.AUTO_LOBBY ?? "1") !== "0";
+// Once registered for a tournament that hasn't started, stay out of casual
+// matches so the admin can start it without waiting for us.
+const LOBBY_WHILE_REGISTERED = (process.env.LOBBY_WHILE_REGISTERED ?? "0") !== "0";
 const VERBOSE = (process.env.VERBOSE ?? "1") !== "0";
 const TOKEN_PATH = path.join(process.cwd(), `.token-${BOT_NAME}`);
 const PARAMS: Params = { ...DEFAULT_PARAMS, ...(process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {}) };
@@ -267,10 +270,23 @@ function heldForTournament(c: DbConnection): boolean {
   return false;
 }
 
+function awaitingTournament(c: DbConnection): boolean {
+  if (myBotId === null) return false;
+  for (const e of c.db.tournamentEntry.iter()) {
+    if (e.botId !== myBotId) continue;
+    if (c.db.tournament.id.find(e.tournamentId)?.status.tag === "Registration") return true;
+  }
+  return false;
+}
+
 function joinLobby(c: DbConnection, why: string) {
   if (!AUTO_LOBBY || myBotId === null) return;
   if (inRunningMatch(c) !== null) return;
   if (heldForTournament(c)) return;
+  if (!LOBBY_WHILE_REGISTERED && awaitingTournament(c)) {
+    if (why !== "periodic") log(`registered for a pending tournament; staying out of the lobby [${why}]`);
+    return;
+  }
   let open: { id: bigint } | null = null;
   for (const l of c.db.openLobbies.iter()) open = l;
   if (open) {
