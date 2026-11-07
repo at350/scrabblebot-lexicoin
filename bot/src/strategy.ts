@@ -85,6 +85,10 @@ export interface Params {
   // Pacing against the field: bids scale by (our balance / mean opponent
   // balance) ^ relMoneyPow, so spending ahead of the field slows us down.
   relMoneyPow: number;
+  // Immediate short plays (under the target length) count at this weight:
+  // they are a fallback, not the goal, so a tile that only makes a 4-letter
+  // word shouldn't be bid for like one that completes a 7.
+  shortPlayWeight: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -115,7 +119,8 @@ export const DEFAULT_PARAMS: Params = {
   genericFadeFrom: 7,
   efficiencyWeight: 0.4,
   genericMinBalance: 30,
-  relMoneyPow: 1.0,
+  relMoneyPow: 0.75,
+  shortPlayWeight: 0.7,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -157,8 +162,9 @@ export interface Plan {
 // having many plans. Immediate plays count as plans with nothing missing.
 export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Params): { value: number; best: Plan | null } {
   const immediate = bestPlayable(d, rack, 2);
+  const immWeight = immediate && immediate.len < p.minTargetLen && view.bagRemaining > p.spendDownFrom ? p.shortPlayWeight : 1;
   let best: Plan | null = immediate
-    ? { word: immediate.word, reward: immediate.reward, missing: [], feasibility: 1, net: immediate.reward }
+    ? { word: immediate.word, reward: immediate.reward, missing: [], feasibility: 1, net: immediate.reward * immWeight }
     : null;
   let bestValue = best?.net ?? 0;
   if (view.bagRemaining <= 0) return { value: bestValue, best };
@@ -222,10 +228,15 @@ export function moneyScale(view: MatchView, p: Params): number {
   const pressure = affordable / Math.max(1, share);
   const t = Math.max(0, Math.min(1, pressure / 2));
   let scale = p.scaleLow + (p.scaleHigh - p.scaleLow) * t;
-  if (p.relMoneyPow > 0 && view.opponents.length > 0 && remaining > p.spendDownFrom) {
-    const oppMean = view.opponents.reduce((a, o) => a + Math.max(0, o.balance), 0) / view.opponents.length;
-    const rel = (view.balance + 5) / (oppMean + 5);
-    scale *= Math.pow(Math.max(0.4, Math.min(2.0, rel)), p.relMoneyPow);
+  if (p.relMoneyPow > 0 && remaining > p.spendDownFrom) {
+    // Pace against opponents that are actually playing; idle bots sitting
+    // on their 100 coins would otherwise make everyone look poor.
+    const active = view.opponents.filter((o) => o.balance !== 100 || o.score > 0).map((o) => Math.max(0, o.balance)).sort((a, b) => a - b);
+    if (active.length >= 2) {
+      const median = active[Math.floor(active.length / 2)]!;
+      const rel = (view.balance + 10) / (median + 10);
+      scale *= Math.pow(Math.max(0.6, Math.min(1.5, rel)), p.relMoneyPow);
+    }
   }
   return scale;
 }

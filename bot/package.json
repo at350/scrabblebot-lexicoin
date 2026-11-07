@@ -1,13 +1,15 @@
 {
-  "name": "scrabblebot-bot-starter",
+  "name": "lexicoin-scrabblebot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "npm install --prefix ../spacetimedb && spacetime generate --lang typescript --out-dir src/module_bindings --module-path ../spacetimedb",
     "start": "tsx src/index.ts",
-    "test": "node --import tsx --test src/strategy.test.ts",
-    "build": "tsc"
+    "sim": "tsx src/sim.ts 200 1",
+    "tune": "tsx src/tune.ts 200 7",
+    "trace": "tsx src/trace.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "generate": "spacetime generate --lang typescript --out-dir src/module_bindings --database scrabblebot"
   },
   "dependencies": {
     "spacetimedb": "^2.12.0",
