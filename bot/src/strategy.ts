@@ -11,6 +11,7 @@
 import {
   BAG_COUNTS,
   LETTER_VALUE,
+  bestCashOut,
   bestPlayable,
   greedyCashOut,
   nearWords,
@@ -52,8 +53,13 @@ export interface Params {
   maxTargetLen: number;
   winProb: number; // chance we win a tile we go after
   optionBonus: number; // value of having many near-complete options
-  priceA: number; // market model: price = priceA + priceB * letterValue
+  priceA: number; // market model: second price paid = priceA + priceB * letterValue
   priceB: number;
+  winA: number; // bid needed to win = winA + winB * letterValue (top bids run higher than prices paid)
+  winB: number;
+  heavyCpp: number; // efficiency floor: bid at least 3 * letterValue * heavyCpp for heavy letters
+  autoPlayMinReward: number; // cash a 7+ word only if it pays at least this (or the rack is bloated)
+  autoPlayRack: number; // ...or the rack has at least this many tiles
   // Money management.
   scaleLow: number;
   scaleHigh: number;
@@ -75,6 +81,10 @@ export interface Params {
   genericWeight: number;
   genericFadeFrom: number; // rack size where the generic bid starts fading
   efficiencyWeight: number; // extra for letters whose 3x value beats their price
+  genericMinBalance: number; // below this balance, speculative bids shrink
+  // Pacing against the field: bids scale by (our balance / mean opponent
+  // balance) ^ relMoneyPow, so spending ahead of the field slows us down.
+  relMoneyPow: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -85,6 +95,11 @@ export const DEFAULT_PARAMS: Params = {
   optionBonus: 3.0,
   priceA: 9,
   priceB: 1.8,
+  winA: 11,
+  winB: 2.3,
+  heavyCpp: 1.2,
+  autoPlayMinReward: 30,
+  autoPlayRack: 11,
   scaleLow: 0.8,
   scaleHigh: 2.0,
   shareOfTiles: 0.18,
@@ -99,6 +114,8 @@ export const DEFAULT_PARAMS: Params = {
   genericWeight: 1.0,
   genericFadeFrom: 7,
   efficiencyWeight: 0.4,
+  genericMinBalance: 30,
+  relMoneyPow: 1.0,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -106,6 +123,14 @@ export function marketPrice(view: MatchView, p: Params, c: number): number {
   const obs = view.priceByValue?.[v];
   const model = p.priceA + p.priceB * v;
   return obs !== undefined ? 0.5 * obs + 0.5 * model : model;
+}
+
+export function winPrice(view: MatchView, p: Params, c: number): number {
+  const v = LETTER_VALUE[c]!;
+  const obs = view.priceByValue?.[v];
+  const model = p.winA + p.winB * v;
+  // Observed second prices run below winning bids; lift them by the same margin.
+  return obs !== undefined ? 0.5 * (obs + (p.winA - p.priceA) + (p.winB - p.priceB) * v) + 0.5 * model : model;
 }
 
 // Probability that at least one tile of letter `c` still comes up for
@@ -184,7 +209,7 @@ export function letterFit(d: Dictionary, rack: Rack, c: number, view: MatchView,
   const balance = Math.max(0.5, 1 - 1.5 * Math.abs(ratioAfter - 0.42));
   // Versatility: E/S/A/R/I ~ 0.45-0.65, Q/Z/J/X ~ 0.02-0.04.
   const vers = 0.75 + 0.9 * Math.sqrt(d.containFrac[c]!);
-  const price = marketPrice(view, p, c);
+  const price = winPrice(view, p, c);
   const efficiency = (3 * LETTER_VALUE[c]!) / Math.max(1, price);
   return dup * balance * vers * (1 + p.efficiencyWeight * (efficiency - 0.5));
 }
@@ -196,7 +221,13 @@ export function moneyScale(view: MatchView, p: Params): number {
   const share = remaining * p.shareOfTiles;
   const pressure = affordable / Math.max(1, share);
   const t = Math.max(0, Math.min(1, pressure / 2));
-  return p.scaleLow + (p.scaleHigh - p.scaleLow) * t;
+  let scale = p.scaleLow + (p.scaleHigh - p.scaleLow) * t;
+  if (p.relMoneyPow > 0 && view.opponents.length > 0 && remaining > p.spendDownFrom) {
+    const oppMean = view.opponents.reduce((a, o) => a + Math.max(0, o.balance), 0) / view.opponents.length;
+    const rel = (view.balance + 5) / (oppMean + 5);
+    scale *= Math.pow(Math.max(0.4, Math.min(2.0, rel)), p.relMoneyPow);
+  }
+  return scale;
 }
 
 export interface BidDecision {
@@ -219,8 +250,8 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
   // Second-to-last tile: we get one second to play it, so only its
   // immediate value counts, and money is worthless afterwards.
   if (view.bagRemaining === 1) {
-    const imm0 = greedyCashOut(d, view.rack, 2).reduce((s, w) => s + w.reward, 0);
-    const imm1 = greedyCashOut(d, withL, 2).reduce((s, w) => s + w.reward, 0);
+    const imm0 = bestCashOut(d, view.rack, 8, 2).reduce((s, w) => s + w.reward, 0);
+    const imm1 = bestCashOut(d, withL, 8, 2).reduce((s, w) => s + w.reward, 0);
     const marginal = Math.max(0, imm1 - imm0);
     const amount = marginal > 0 ? view.balance : 0;
     return { amount, marginal, reason: "penultimate" };
@@ -237,17 +268,27 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
   // long word needs seven tiles, so buy well-fitting ones at market.
   const total = rackTotal(view.rack);
   const fade = total <= p.genericFadeFrom ? 1 : Math.max(0, 1 - (total - p.genericFadeFrom) / 5);
+  const remaining = view.bagRemaining + 1;
   if (fade > 0) {
-    const generic = marketPrice(view, p, c) * letterFit(d, view.rack, c, view, p) * p.genericWeight * fade * scale;
+    // Don't gamble the last coins on tiles that fit no plan: keep them for
+    // the tile that completes one. (Not near the end, when coins expire.)
+    const reserve = remaining <= p.spendDownFrom ? 1 : Math.min(1, view.balance / p.genericMinBalance);
+    const fit = letterFit(d, view.rack, c, view, p);
+    const generic = winPrice(view, p, c) * fit * p.genericWeight * fade * scale * reserve;
     if (generic > amount) amount = generic;
+    // Heavy letters pay 3x their value in any long word, which beats their
+    // price; don't let a low fit score talk us out of them.
+    const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp * Math.min(1, fit + 0.5) * scale * reserve;
+    if (LETTER_VALUE[c]! >= 4 && heavy > amount) amount = heavy;
   }
 
   // Near the end, leftover coins are worthless: spend down on anything
-  // that still helps.
-  const remaining = view.bagRemaining + 1;
-  if (remaining <= p.spendDownFrom && marginal > 0) {
-    const spendDown = view.balance / Math.max(1, remaining * p.shareOfTiles);
-    amount = Math.max(amount, Math.min(spendDown, marginal * p.coinsPerPoint * 2));
+  // that could still end up in a word. Only auctions whose tile can still
+  // be played count: the last one can't, the one before only immediately.
+  if (remaining <= p.spendDownFrom && amount > 0) {
+    const usefulLeft = Math.max(1, Math.min(remaining - 1, 3));
+    const spendDown = view.balance / usefulLeft;
+    if (spendDown > amount) amount = spendDown;
   }
 
   if (view.auctionType === "FirstPrice") amount *= p.firstPriceShade;
@@ -268,18 +309,21 @@ export function decidePlays(d: Dictionary, view: MatchView, p: Params): Playable
   const total = rackTotal(rack);
   if (total < 2) return [];
 
-  // Endgame: cash everything, best words first.
+  // Endgame: cash everything, best combination first.
   if (view.bagRemaining <= p.endgameDump) {
-    return greedyCashOut(d, rack, 2);
+    return bestCashOut(d, rack, 12, 2);
   }
 
   const plays: Playable[] = [];
   let r = rack;
-  // Auto-play long words: the multiplier is already maxed, and the cash
-  // funds more tiles.
+  // Cash long words once they pay well: the multiplier is maxed and the
+  // coins fund more tiles. A cheap 7-letter word (all 1-point tiles) is
+  // held instead, since the same tiles can grow into something better.
   for (;;) {
     const best = bestPlayable(d, r, p.autoPlayMinLen);
     if (!best) break;
+    const bloated = rackTotal(r) >= p.autoPlayRack;
+    if (best.reward < p.autoPlayMinReward && !bloated && view.balance >= p.lowBalance) break;
     plays.push(best);
     r = rackRemoveWord(r, best.word);
   }

@@ -302,3 +302,28 @@ export function greedyCashOut(d: Dictionary, rack: Rack, minLen = 2): Playable[]
   }
   return plays;
 }
+
+// Cash-out with a one-level search: try each of the top `width` first words,
+// finish greedily, and keep the best total. Catches cases where the single
+// best word strands tiles that two medium words would have used.
+export function bestCashOut(d: Dictionary, rack: Rack, width = 12, minLen = 2): Playable[] {
+  const candidates = playableWords(d, rack, minLen).sort((a, b) => b.reward - a.reward || a.len - b.len);
+  if (candidates.length === 0) return [];
+  let best: Playable[] = [];
+  let bestTotal = -1;
+  const seen = new Set<string>();
+  for (const first of candidates) {
+    if (seen.size >= width) break;
+    // Skip anagram duplicates: same letters give the same remainder.
+    const key = [...first.word].sort().join("");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rest = greedyCashOut(d, rackRemoveWord(rack, first.word), minLen);
+    const total = first.reward + rest.reduce((s, w) => s + w.reward, 0);
+    if (total > bestTotal) {
+      bestTotal = total;
+      best = [first, ...rest];
+    }
+  }
+  return best;
+}

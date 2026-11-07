@@ -78,13 +78,9 @@ log(`dictionary: ${DICT.words.length} words in ${(performance.now() - t0).toFixe
 
 interface MatchTrack {
   matchId: bigint;
-  auctioned: Rack; // letters auctioned so far (including the open one)
-  won: Rack; // letters we won
-  played: Rack; // letters we spent on words
   paidByValue: number[][]; // observed second prices by letter value
   bidsSubmitted: Set<string>;
   subscribed: boolean;
-  lastAuctionSeen: bigint;
   bids: number;
   wins: number;
   spent: number;
@@ -98,13 +94,9 @@ function trackFor(matchId: bigint): MatchTrack {
   if (!t) {
     t = {
       matchId,
-      auctioned: emptyRack(),
-      won: emptyRack(),
-      played: emptyRack(),
       paidByValue: Array.from({ length: 11 }, () => []),
       bidsSubmitted: new Set(),
       subscribed: false,
-      lastAuctionSeen: 0n,
       bids: 0,
       wins: 0,
       spent: 0,
@@ -153,11 +145,36 @@ function buildView(c: DbConnection, matchId: bigint): MatchView | null {
   if (!m || !me) return null;
   const t = trackFor(matchId);
   const rack = rackForMatch(c, matchId);
+  // Everything is derived from the cached tables, so a mid-match
+  // (re)connect still gets the right accounting.
+  const auctioned = emptyRack();
+  for (const a of c.db.auction.iter()) {
+    if (a.matchId !== matchId) continue;
+    const li = letterIndex(a.letter);
+    if (li >= 0 && li < 26) auctioned[li]!++;
+  }
+  const won = emptyRack();
+  t.paidByValue = Array.from({ length: 11 }, () => []);
+  for (const r of c.db.auctionResult.iter()) {
+    if (r.matchId !== matchId) continue;
+    const li = letterIndex(r.letter);
+    if (li < 0 || li > 25) continue;
+    if (r.winnerBotId === myBotId) won[li]!++;
+    if (r.winnerBotId !== undefined && r.winnerBotId !== null && Number(r.paid) > 0) t.paidByValue[valueOf(li)]!.push(Number(r.paid));
+  }
+  const played = emptyRack();
+  for (const w of c.db.wordPlay.iter()) {
+    if (w.matchId !== matchId || w.botId !== myBotId) continue;
+    for (const ch of w.word) {
+      const li = letterIndex(ch);
+      if (li >= 0 && li < 26) played[li]!++;
+    }
+  }
   // Initial deal = what we hold now, minus what we won, plus what we spent.
   const pool = emptyRack();
   for (let i = 0; i < 26; i++) {
-    const initial = rack[i]! - t.won[i]! + t.played[i]!;
-    pool[i] = Math.max(0, BAG_COUNTS[i]! - initial - t.auctioned[i]!);
+    const initial = Math.max(0, rack[i]! - won[i]! + played[i]!);
+    pool[i] = Math.max(0, BAG_COUNTS[i]! - initial - auctioned[i]!);
   }
   const opponents: { balance: number; score: number }[] = [];
   for (const p of c.db.matchParticipant.iter()) {
@@ -187,11 +204,6 @@ function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: strin
   const me = participant(c, a.matchId);
   if (!me) return; // not our match
   t.bidsSubmitted.add(key);
-  const li = letterIndex(a.letter);
-  if (li >= 0 && li < 26 && a.id > t.lastAuctionSeen) {
-    t.auctioned[li]!++;
-    t.lastAuctionSeen = a.id;
-  }
   const view = buildView(c, a.matchId);
   if (!view) return;
   const started = performance.now();
@@ -349,16 +361,10 @@ function wireCallbacks(c: DbConnection) {
     if (myBotId === null) return;
     const t = tracks.get(String(r.matchId));
     if (!t) return;
-    const li = letterIndex(r.letter);
     const winner = r.winnerBotId;
-    if (winner !== undefined && winner !== null) {
-      if (winner === myBotId) {
-        if (li >= 0 && li < 26) t.won[li]!++;
-        t.wins++;
-        t.spent += Number(r.paid);
-      }
-      const v = li >= 0 && li < 26 ? valueOf(li) : 0;
-      if (v > 0 && Number(r.paid) > 0) t.paidByValue[v]!.push(Number(r.paid));
+    if (winner === myBotId) {
+      t.wins++;
+      t.spent += Number(r.paid);
     }
     if (VERBOSE) log(`m${r.matchId} result '${r.letter}' -> ${winner === myBotId ? "US" : winner ?? "nobody"} paid ${r.paid}`);
     // Endgame plays are triggered by auction closes, not just rack changes.
@@ -370,10 +376,6 @@ function wireCallbacks(c: DbConnection) {
     const t = tracks.get(String(w.matchId));
     if (!t) return;
     if (w.botId === myBotId) {
-      for (const ch of w.word) {
-        const li = letterIndex(ch);
-        if (li >= 0 && li < 26) t.played[li]!++;
-      }
       log(`m${w.matchId} played ${w.word} +${w.totalReward}`);
     } else if (VERBOSE) {
       log(`m${w.matchId} opp ${w.botId} played ${w.word} +${w.totalReward}`);

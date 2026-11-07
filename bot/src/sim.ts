@@ -121,6 +121,7 @@ function modelPlay(d: Dictionary, p: Player, bagRemaining: number) {
   for (;;) {
     const best = bestPlayable(d, p.rack, 7);
     if (!best) break;
+    if (best.reward < 27 && rackTotal(p.rack) < 11 && p.balance >= 12) break;
     applyPlay(p, best.word, best.reward);
   }
   if (p.balance < 10) {
@@ -278,23 +279,25 @@ export function summarize(results: MatchResult[], ourIdx: number): Summary {
 }
 
 // A field like the live lobby: strong real bots with varied pricing.
+// Calibrated to observed top bids in live matches among strong bots:
+// vowels ~13-15, 3-4 point letters ~19-22, K/J/X ~26-33, Q/Z ~35-37.
 export function strongField(params: Params): OpponentKind[] {
   return [
     { kind: "ours", params },
-    { kind: "model", name: "floor10", a: 9, b: 1.8, sigma: 2.5, skip: 0.1, completeBoost: 0.5 },
-    { kind: "model", name: "premium", a: 7, b: 2.6, sigma: 3, skip: 0.1, completeBoost: 0.8 },
-    { kind: "model", name: "flat", a: 11, b: 1.2, sigma: 2, skip: 0.15, completeBoost: 0.3 },
-    { kind: "model", name: "hunter", a: 6, b: 2.0, sigma: 3, skip: 0.2, completeBoost: 1.2 },
-    { kind: "model", name: "steady", a: 10, b: 1.5, sigma: 2, skip: 0.05, completeBoost: 0.6 },
+    { kind: "model", name: "floor13", a: 11, b: 2.3, sigma: 3, skip: 0.08, completeBoost: 0.5 },
+    { kind: "model", name: "premium", a: 9, b: 3.0, sigma: 3, skip: 0.08, completeBoost: 0.8 },
+    { kind: "model", name: "flat", a: 13, b: 1.6, sigma: 2.5, skip: 0.12, completeBoost: 0.3 },
+    { kind: "model", name: "hunter", a: 8, b: 2.4, sigma: 3.5, skip: 0.15, completeBoost: 1.2 },
+    { kind: "model", name: "steady", a: 12, b: 2.0, sigma: 2, skip: 0.05, completeBoost: 0.6 },
   ];
 }
 
 export function mixedField(params: Params): OpponentKind[] {
   return [
     { kind: "ours", params },
-    { kind: "model", name: "floor10", a: 9, b: 1.8, sigma: 2.5, skip: 0.1, completeBoost: 0.5 },
-    { kind: "model", name: "premium", a: 7, b: 2.6, sigma: 3, skip: 0.1, completeBoost: 0.8 },
-    { kind: "model", name: "hunter", a: 6, b: 2.0, sigma: 3, skip: 0.2, completeBoost: 1.2 },
+    { kind: "model", name: "floor13", a: 11, b: 2.3, sigma: 3, skip: 0.08, completeBoost: 0.5 },
+    { kind: "model", name: "premium", a: 9, b: 3.0, sigma: 3, skip: 0.08, completeBoost: 0.8 },
+    { kind: "model", name: "hunter", a: 8, b: 2.4, sigma: 3.5, skip: 0.15, completeBoost: 1.2 },
     { kind: "sim", strategy: "Aggressive" },
     { kind: "sim", strategy: "ValueBidder" },
   ];
