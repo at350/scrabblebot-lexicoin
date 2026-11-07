@@ -343,20 +343,20 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
 let distCacheKey = "";
 let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
 
-function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number): number {
+function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, intrinsicW: number): number {
   const after = evaluateRack(d, rackAdd(view.rack, c), view, p).value;
-  return Math.max(0, after - baseValue) + p.intrinsicW * LETTER_VALUE[c]!;
+  return Math.max(0, after - baseValue) + intrinsicW * LETTER_VALUE[c]!;
 }
 
-function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number): number {
-  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}`;
+function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number, intrinsicW: number): number {
+  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}|${intrinsicW.toFixed(2)}`;
   if (key !== distCacheKey) {
     const values: number[] = [];
     const weights: number[] = [];
     for (let c = 0; c < 26; c++) {
       const n = view.pool[c] ?? 0;
       if (n <= 0) continue;
-      values.push(desirability(d, c, view, p, baseValue));
+      values.push(desirability(d, c, view, p, baseValue, intrinsicW));
       weights.push(n);
     }
     distCacheKey = key;
@@ -382,24 +382,31 @@ function rackToKey(r: Rack): string {
 
 function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, marginal: number, plan: Plan | null): BidDecision {
   const remaining = view.bagRemaining + 1;
-  const des = marginal + p.intrinsicW * LETTER_VALUE[c]!;
   // We pay the second price, not our bid: budget tiles at the paid level.
   const avgPaid = p.priceA + p.priceB * 1.9;
   // How many of the remaining tiles we can afford, as a fraction of what's
   // left (excluding the unplayable last one).
   const affordable = (view.balance / avgPaid) * p.affordScale;
+  // The letter prior (a heavy tile is worth 3x its value in some future
+  // word) only matters while we can still afford to build; when the purse
+  // is down to a tile or two, only completing a plan counts.
+  const intrinsicW = p.intrinsicW * Math.min(1, affordable / 4);
+  const des = marginal + intrinsicW * LETTER_VALUE[c]!;
   const fraction = Math.max(0.05, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
-  const threshold = desirabilityThreshold(d, view, p, baseValue, fraction);
+  const threshold = desirabilityThreshold(d, view, p, baseValue, fraction, intrinsicW);
   const scale = moneyScale(view, p);
   const win = winPrice(view, p, c);
   let amount: number;
   let mode: string;
+  // Does this tile complete a long word right now? Then its value is
+  // concrete and worth paying for; otherwise it is one step of a plan and
+  // must fit the budget: never more than a third of the purse on one tile.
+  const completes = plan !== null && plan.missing.length === 0 && plan.word.length >= p.minTargetLen;
   if (des >= threshold && des > 0) {
-    // Decisive: beat the field for this one. Pay up more for tiles that
-    // are far better than the cut, less for marginal ones.
-    const edge = threshold > 0 ? Math.min(2, des / threshold) : 1;
-    amount = Math.max(win * p.decisiveMult * (0.85 + 0.3 * edge), des * p.coinsPerPoint) * Math.max(0.8, Math.min(1.3, scale));
-    mode = "GO";
+    amount = win * p.decisiveMult * Math.max(0.8, Math.min(1.1, scale));
+    if (completes) amount = Math.max(amount, des * p.coinsPerPoint);
+    else if (remaining > p.spendDownFrom) amount = Math.min(amount, view.balance / 3);
+    mode = completes ? "GO!" : "GO";
   } else {
     amount = des * p.coinsPerPoint * p.fishMult * scale;
     // Rivals run out of coins mid-match and tiles go for 5-9; a token bid
@@ -409,8 +416,13 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   }
   // Heavy letters pay 3x their value in any long word; never let them go
   // for less than that when we can afford it.
-  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && view.balance >= p.genericMinBalance) {
-    const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp;
+  // ...but only while we can still afford the filler around them, and not
+  // when the rack already holds unplayed heavy tiles: Q+X+Z together is a
+  // dead rack, not a plan.
+  let heavyHeld = 0;
+  for (let i = 0; i < 26; i++) if (LETTER_VALUE[i]! >= 5) heavyHeld += view.rack[i]!;
+  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && affordable >= 4 && heavyHeld < 2 && des >= threshold * 0.5) {
+    const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp * Math.min(1, affordable / 7);
     if (heavy > amount) {
       amount = heavy;
       mode = "heavy";
