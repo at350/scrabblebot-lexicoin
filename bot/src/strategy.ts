@@ -89,6 +89,16 @@ export interface Params {
   // they are a fallback, not the goal, so a tile that only makes a 4-letter
   // word shouldn't be bid for like one that completes a 7.
   shortPlayWeight: number;
+  // Selective allocation: rank letters by desirability (plan gain plus a
+  // letter prior) against the pool of tiles still to come, and bid
+  // decisively (above the winning level) only on the top fraction we can
+  // afford to buy; fish with token bids elsewhere.
+  selective: boolean;
+  decisiveMult: number; // decisive bid = winPrice * this (at least)
+  fishMult: number; // token bid = desirability * coinsPerPoint * this
+  intrinsicW: number; // letter prior per point of letter value
+  affordScale: number; // how many tiles we plan to buy = balance / avgPaidPrice * this
+  fishFloor: number; // token bid on any useful letter, to pick up cheap tiles when rivals are broke
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -97,21 +107,25 @@ export const DEFAULT_PARAMS: Params = {
   maxTargetLen: 9,
   winProb: 0.7,
   optionBonus: 3.0,
-  priceA: 9,
-  priceB: 1.8,
-  winA: 11,
-  winB: 2.3,
+  // Second price paid, from 30 live matches among top bots: v1 ~11, v3 ~16,
+  // v4 ~18.5, K ~22, J/X ~25, Z ~33.
+  priceA: 9.5,
+  priceB: 1.7,
+  // 75th-percentile winning bid: v1 ~18, v3 ~23, v4 ~25, K ~31, J/X ~37,
+  // Q ~32, Z ~50. Bidding here wins ~75% of auctions at the second price.
+  winA: 15.5,
+  winB: 2.5,
   heavyCpp: 1.2,
-  autoPlayMinReward: 30,
+  autoPlayMinReward: 33,
   autoPlayRack: 11,
   scaleLow: 0.8,
   scaleHigh: 2.0,
   shareOfTiles: 0.18,
-  spendDownFrom: 8,
+  spendDownFrom: 10,
   autoPlayMinLen: 7,
   lowBalance: 12,
   lowBalanceMinReward: 20,
-  endgameDump: 1,
+  endgameDump: 2,
   maxRackHold: 14,
   firstPriceShade: 0.65,
   coinsPerPoint: 2.0,
@@ -121,6 +135,12 @@ export const DEFAULT_PARAMS: Params = {
   genericMinBalance: 30,
   relMoneyPow: 0.75,
   shortPlayWeight: 0.7,
+  selective: true,
+  decisiveMult: 1.0,
+  fishMult: 0.5,
+  intrinsicW: 1.0,
+  affordScale: 1.0,
+  fishFloor: 10,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -275,6 +295,8 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
   const scale = moneyScale(view, p);
   let amount = marginal * p.coinsPerPoint * scale;
 
+  if (p.selective) return decideSelective(d, c, view, p, before.value, marginal, after.best);
+
   // Building bid: with few tiles there is no concrete plan yet, but every
   // long word needs seven tiles, so buy well-fitting ones at market.
   const total = rackTotal(view.rack);
@@ -311,6 +333,102 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
     amount,
     marginal,
     reason: `m=${marginal.toFixed(1)} s=${scale.toFixed(2)} plan=${after.best?.word ?? "-"}(${after.best?.missing.length ?? 0})`,
+  };
+}
+
+// ---------- Selective allocation ----------
+
+// Desirability distribution over the tiles still to come, cached per rack
+// (it only changes when the rack does; the bag shrinking barely moves it).
+let distCacheKey = "";
+let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
+
+function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number): number {
+  const after = evaluateRack(d, rackAdd(view.rack, c), view, p).value;
+  return Math.max(0, after - baseValue) + p.intrinsicW * LETTER_VALUE[c]!;
+}
+
+function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number): number {
+  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}`;
+  if (key !== distCacheKey) {
+    const values: number[] = [];
+    const weights: number[] = [];
+    for (let c = 0; c < 26; c++) {
+      const n = view.pool[c] ?? 0;
+      if (n <= 0) continue;
+      values.push(desirability(d, c, view, p, baseValue));
+      weights.push(n);
+    }
+    distCacheKey = key;
+    distCache = { values, weights };
+  }
+  const { values, weights } = distCache;
+  if (values.length === 0) return 0;
+  const order = values.map((v, i) => i).sort((a, b) => values[b]! - values[a]!);
+  const totalW = weights.reduce((a, b) => a + b, 0);
+  let acc = 0;
+  for (const i of order) {
+    acc += weights[i]!;
+    if (acc >= fraction * totalW) return values[i]!;
+  }
+  return values[order[order.length - 1]!]!;
+}
+
+function rackToKey(r: Rack): string {
+  let s = "";
+  for (let i = 0; i < 26; i++) if (r[i]! > 0) s += String.fromCharCode(65 + i) + r[i];
+  return s;
+}
+
+function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, marginal: number, plan: Plan | null): BidDecision {
+  const remaining = view.bagRemaining + 1;
+  const des = marginal + p.intrinsicW * LETTER_VALUE[c]!;
+  // We pay the second price, not our bid: budget tiles at the paid level.
+  const avgPaid = p.priceA + p.priceB * 1.9;
+  // How many of the remaining tiles we can afford, as a fraction of what's
+  // left (excluding the unplayable last one).
+  const affordable = (view.balance / avgPaid) * p.affordScale;
+  const fraction = Math.max(0.05, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
+  const threshold = desirabilityThreshold(d, view, p, baseValue, fraction);
+  const scale = moneyScale(view, p);
+  const win = winPrice(view, p, c);
+  let amount: number;
+  let mode: string;
+  if (des >= threshold && des > 0) {
+    // Decisive: beat the field for this one. Pay up more for tiles that
+    // are far better than the cut, less for marginal ones.
+    const edge = threshold > 0 ? Math.min(2, des / threshold) : 1;
+    amount = Math.max(win * p.decisiveMult * (0.85 + 0.3 * edge), des * p.coinsPerPoint) * Math.max(0.8, Math.min(1.3, scale));
+    mode = "GO";
+  } else {
+    amount = des * p.coinsPerPoint * p.fishMult * scale;
+    // Rivals run out of coins mid-match and tiles go for 5-9; a token bid
+    // on any letter we could use picks those up.
+    if (des > 1.5 && view.balance >= p.genericMinBalance && amount < p.fishFloor) amount = p.fishFloor;
+    mode = "fish";
+  }
+  // Heavy letters pay 3x their value in any long word; never let them go
+  // for less than that when we can afford it.
+  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && view.balance >= p.genericMinBalance) {
+    const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp;
+    if (heavy > amount) {
+      amount = heavy;
+      mode = "heavy";
+    }
+  }
+  if (remaining <= p.spendDownFrom && amount > 0) {
+    const usefulLeft = Math.max(1, Math.min(remaining - 1, 3));
+    const spendDown = view.balance / usefulLeft;
+    if (spendDown > amount) amount = spendDown;
+  }
+  if (view.auctionType === "FirstPrice") amount *= p.firstPriceShade;
+  amount = Math.floor(amount);
+  if (amount > view.balance) amount = view.balance;
+  if (amount < 0) amount = 0;
+  return {
+    amount,
+    marginal,
+    reason: `${mode} d=${des.toFixed(1)} thr=${threshold.toFixed(1)} f=${fraction.toFixed(2)} s=${scale.toFixed(2)} plan=${plan?.word ?? "-"}(${plan?.missing.length ?? 0})`,
   };
 }
 
