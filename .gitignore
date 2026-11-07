@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.token-*
+*.token
+.env
+.DS_Store
+sim/out/
