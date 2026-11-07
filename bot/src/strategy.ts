@@ -417,7 +417,12 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   if (des >= threshold && des > 0) {
     amount = win * p.decisiveMult * Math.max(0.8, Math.min(1.1, scale));
     if (completes) amount = Math.max(amount, des * p.coinsPerPoint);
-    else if (remaining > p.spendDownFrom) amount = Math.min(amount, view.balance / 3);
+    else if (remaining > p.spendDownFrom) {
+      // Never more than a third of the purse on one speculative tile, but
+      // a small purse must still be able to win an ordinary letter.
+      const cap = Math.max(view.balance / 3, Math.min(view.balance, p.winA + p.winB));
+      amount = Math.min(amount, cap);
+    }
     mode = completes ? "GO!" : "GO";
   } else {
     amount = des * p.coinsPerPoint * p.fishMult * scale;
