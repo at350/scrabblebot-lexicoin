@@ -6,7 +6,9 @@
 //     --params k=v,...      overrides applied to every variant
 //     --vs k=v,...          add a variant (repeatable): base + these overrides
 //     --sweep key=a,b,c     one variant per value (repeatable, one key each)
-//     --workers N           worker processes (default: cores - 2)
+//     --workers N           worker processes (default 2; they run at nice 15
+//                           so the live bot on the same machine keeps its
+//                           one-second auction deadlines)
 //     --verbose             per-match lines for the base variant
 //     --ours                replay matches our bot really played (from
 //                           `pull_matches.ts --ours`) and compare with its
@@ -197,7 +199,16 @@ export function replayMatch(d: Dictionary, m: ReplayMatch, params: Params, seed:
 
 // ---------- worker ----------
 
+function lowerPriority() {
+  try {
+    os.setPriority(Math.max(os.getPriority(), 15));
+  } catch {
+    // not permitted: run at the inherited priority
+  }
+}
+
 function runWorker() {
+  lowerPriority();
   const d = loadDictionary(WORDLIST);
   const cache = new Map<number, ReturnType<typeof loadMatch>>();
   process.on("message", (job: Job | { done: true }) => {
@@ -213,6 +224,7 @@ function runWorker() {
 async function runJobs(jobs: Job[], workers: number): Promise<ReplayResult[]> {
   const out: ReplayResult[] = [];
   if (workers <= 1) {
+    lowerPriority();
     const d = loadDictionary(WORDLIST);
     for (const j of jobs) {
       const m = loadMatch(j.dir, j.matchId);
@@ -292,7 +304,7 @@ async function main() {
   const args = process.argv.slice(2);
   const pos: string[] = [];
   let seeds = 3;
-  let workers = Math.max(1, os.cpus().length - 2);
+  let workers = 2;
   let verbose = false;
   let dir = DATA_DIR;
   let base: Partial<Params> = {};

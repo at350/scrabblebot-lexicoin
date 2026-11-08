@@ -40,6 +40,8 @@ The replay evaluator is the better yardstick: sealed-bid Vickrey bids don't
 depend on each other, so inserting our bids against the recorded top bids
 (win iff we bid more, pay their top bid) shows what our strategy would have
 scored against the real field. Variants share deals, so `Δ` is paired.
+It defaults to two worker processes at nice 15; don't raise that while the
+live bot runs on the same machine.
 
 ## How it plays
 
