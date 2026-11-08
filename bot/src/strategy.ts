@@ -150,7 +150,7 @@ export const DEFAULT_PARAMS: Params = {
   coinsPerPoint: 2.0,
   genericWeight: 1.0,
   genericFadeFrom: 7,
-  efficiencyWeight: 0.4,
+  efficiencyWeight: 1.2,
   genericMinBalance: 30,
   relMoneyPow: 0.75,
   shortPlayWeight: 0.7,
