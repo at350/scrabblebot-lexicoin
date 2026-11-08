@@ -1,13 +1,15 @@
 // Pull recorded live matches for the replay evaluator (`replay.ts`).
 //
-//   npx tsx src/pull_matches.ts [count=150] [loId=42800] [hiId=99999999]
+//   npx tsx src/pull_matches.ts [count=150] [loId=42800] [hiId=99999999] [--ours]
 //
 // Picks the most recent ended Vickrey matches in [loId, hiId] that have six
 // participants, ranked by how many top bots sat in them, and caches each one
 // to bot/data/replay/<match_id>.json: every auction in order (letter, winning
 // bid, second price, winner) plus every word play and the final scores.
 // Matches already on disk are not fetched again. Matches our own bot (199)
-// played in are skipped.
+// played in are skipped; with --ours only those are pulled, most recent
+// first, into bot/data/replay-ours/ (to check the replay against our real
+// scores).
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -42,6 +44,7 @@ export interface ReplayMatch {
 }
 
 export const DATA_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "data", "replay");
+export const OURS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "data", "replay-ours");
 
 // ---------- spacetime sql ----------
 
@@ -129,10 +132,13 @@ function ranges(ids: number[], span: number): [number, number][] {
 }
 
 async function main() {
-  const count = Number(process.argv[2] ?? 150);
-  const lo = Number(process.argv[3] ?? 42800);
-  const hi = Number(process.argv[4] ?? 99999999);
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const ours = process.argv.includes("--ours");
+  const pos = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const count = Number(pos[0] ?? 150);
+  const lo = Number(pos[1] ?? 42800);
+  const hi = Number(pos[2] ?? 99999999);
+  const dir = ours ? OURS_DIR : DATA_DIR;
+  fs.mkdirSync(dir, { recursive: true });
   const t0 = performance.now();
 
   const [states, parts, bots] = await Promise.all([
@@ -153,13 +159,13 @@ async function main() {
     .map((s) => num(s.id))
     .filter((id) => {
       const ps = byMatch.get(id);
-      return ps && ps.length === 6 && !ps.some((p) => p.botId === OUR_BOT_ID) && ps.some((p) => p.score > 0);
+      return ps && ps.length === 6 && ps.some((p) => p.botId === OUR_BOT_ID) === ours && ps.some((p) => p.score > 0);
     })
-    .map((id) => ({ id, topCount: byMatch.get(id)!.filter((p) => top.has(p.botId)).length }))
+    .map((id) => ({ id, topCount: ours ? 0 : byMatch.get(id)!.filter((p) => top.has(p.botId)).length }))
     // Most top bots first, then most recent.
     .sort((a, b) => b.topCount - a.topCount || b.id - a.id);
   const chosen = candidates.slice(0, count).map((c) => c.id).sort((a, b) => a - b);
-  const missing = chosen.filter((id) => !fs.existsSync(path.join(DATA_DIR, `${id}.json`)));
+  const missing = chosen.filter((id) => !fs.existsSync(path.join(dir, `${id}.json`)));
   const hist = new Map<number, number>();
   for (const c of candidates.slice(0, count)) hist.set(c.topCount, (hist.get(c.topCount) ?? 0) + 1);
   console.log(
@@ -236,10 +242,10 @@ async function main() {
       auctions: as,
       plays: (plays.get(id) ?? []).sort((a, b) => a.playedAt - b.playedAt),
     };
-    fs.writeFileSync(path.join(DATA_DIR, `${id}.json`), JSON.stringify(match));
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(match));
     written++;
   }
-  console.log(`wrote ${written} matches to ${DATA_DIR} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+  console.log(`wrote ${written} matches to ${dir} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]).endsWith("pull_matches.ts");

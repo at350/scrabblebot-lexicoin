@@ -8,6 +8,9 @@
 //     --sweep key=a,b,c     one variant per value (repeatable, one key each)
 //     --workers N           worker processes (default: cores - 2)
 //     --verbose             per-match lines for the base variant
+//     --ours                replay matches our bot really played (from
+//                           `pull_matches.ts --ours`) and compare with its
+//                           recorded score: a check of the method itself
 //
 // Why this is valid: in a sealed-bid Vickrey auction the other bots' bids
 // don't depend on ours, so we win a tile iff our bid beats the recorded top
@@ -30,10 +33,11 @@ import * as path from "node:path";
 import { BAG_COUNTS, emptyRack, letterIndex, loadDictionary, rackClone, rackRemoveWord, rackTotal, type Dictionary, type Rack } from "./engine.js";
 import { DEFAULT_PARAMS, decideBid, decidePlays, type MatchView, type Params } from "./strategy.js";
 import { rng } from "./sim.js";
-import { DATA_DIR, TOP_BOTS, type ReplayMatch } from "./pull_matches.js";
+import { DATA_DIR, OURS_DIR, OUR_BOT_ID, TOP_BOTS, type ReplayMatch } from "./pull_matches.js";
 
 interface Job {
   variant: number;
+  dir: string;
   matchId: number;
   seed: number; // per-deal seed, shared by all variants
   params: Params;
@@ -49,13 +53,30 @@ export interface ReplayResult {
   spent: number;
   words: string[];
   recorded: { botId: number; name: string; score: number }[];
+  actual?: number; // our bot's real score, when it played this match
 }
 
 const SELF = path.resolve(new URL(import.meta.url).pathname);
 const WORDLIST = path.join(path.dirname(SELF), "..", "..", "data", "wordlist.txt");
 
-function loadMatch(id: number): ReplayMatch {
-  return JSON.parse(fs.readFileSync(path.join(DATA_DIR, `${id}.json`), "utf8"));
+// A match our bot really played: take it out, leaving the others' bids.
+// Where it won, the price it paid was the best of the other bids.
+function withoutUs(m: ReplayMatch): { match: ReplayMatch; actual?: number } {
+  const us = m.participants.find((p) => p.botId === OUR_BOT_ID);
+  if (!us) return { match: m };
+  return {
+    actual: us.score,
+    match: {
+      ...m,
+      participants: m.participants.filter((p) => p.botId !== OUR_BOT_ID),
+      plays: m.plays.filter((p) => p.botId !== OUR_BOT_ID),
+      auctions: m.auctions.map((a) => (a.winner === OUR_BOT_ID ? { ...a, topBid: a.paid, paid: 0, winner: null } : a)),
+    },
+  };
+}
+
+function loadMatch(dir: string, id: number): { match: ReplayMatch; actual?: number } {
+  return withoutUs(JSON.parse(fs.readFileSync(path.join(dir, `${id}.json`), "utf8")));
 }
 
 function mix(a: number, b: number): number {
@@ -178,12 +199,12 @@ export function replayMatch(d: Dictionary, m: ReplayMatch, params: Params, seed:
 
 function runWorker() {
   const d = loadDictionary(WORDLIST);
-  const cache = new Map<number, ReplayMatch>();
+  const cache = new Map<number, ReturnType<typeof loadMatch>>();
   process.on("message", (job: Job | { done: true }) => {
     if ("done" in job) process.exit(0);
     let m = cache.get(job.matchId);
-    if (!m) cache.set(job.matchId, (m = loadMatch(job.matchId)));
-    const res: ReplayResult = { variant: job.variant, ...replayMatch(d, m, job.params, job.seed) };
+    if (!m) cache.set(job.matchId, (m = loadMatch(job.dir, job.matchId)));
+    const res: ReplayResult = { variant: job.variant, ...replayMatch(d, m.match, job.params, job.seed), actual: m.actual };
     process.send!(res);
   });
   process.send!({ ready: true });
@@ -193,7 +214,10 @@ async function runJobs(jobs: Job[], workers: number): Promise<ReplayResult[]> {
   const out: ReplayResult[] = [];
   if (workers <= 1) {
     const d = loadDictionary(WORDLIST);
-    for (const j of jobs) out.push({ variant: j.variant, ...replayMatch(d, loadMatch(j.matchId), j.params, j.seed) });
+    for (const j of jobs) {
+      const m = loadMatch(j.dir, j.matchId);
+      out.push({ variant: j.variant, ...replayMatch(d, m.match, j.params, j.seed), actual: m.actual });
+    }
     return out;
   }
   let next = 0;
@@ -270,6 +294,7 @@ async function main() {
   let seeds = 3;
   let workers = Math.max(1, os.cpus().length - 2);
   let verbose = false;
+  let dir = DATA_DIR;
   let base: Partial<Params> = {};
   const variants: { name: string; over: Partial<Params> }[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -277,6 +302,7 @@ async function main() {
     if (a === "--seeds") seeds = Number(args[++i]);
     else if (a === "--workers") workers = Number(args[++i]);
     else if (a === "--verbose") verbose = true;
+    else if (a === "--ours") dir = OURS_DIR;
     else if (a === "--params") base = { ...base, ...parseKv(args[++i]!) };
     else if (a === "--vs") variants.push({ name: args[i + 1]!, over: parseKv(args[++i]!) });
     else if (a === "--sweep") {
@@ -292,7 +318,7 @@ async function main() {
   ];
 
   const ids = fs
-    .readdirSync(DATA_DIR)
+    .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .map((f) => Number(f.slice(0, -5)))
     .sort((a, b) => b - a)
@@ -300,7 +326,7 @@ async function main() {
   const jobs: Job[] = [];
   all.forEach((v, vi) => {
     const params = { ...DEFAULT_PARAMS, ...base, ...v.over };
-    for (const id of ids) for (let s = 0; s < seeds; s++) jobs.push({ variant: vi, matchId: id, seed: seed * 1000 + s, params });
+    for (const id of ids) for (let s = 0; s < seeds; s++) jobs.push({ variant: vi, dir, matchId: id, seed: seed * 1000 + s, params });
   });
   const t0 = performance.now();
   const results = await runJobs(jobs, workers);
@@ -319,8 +345,9 @@ async function main() {
       const ours = rs.map((r) => r.score);
       const rank = rs.reduce((a, r) => a + rankOf(r).rank, 0) / rs.length;
       const winner = rs[0]!.recorded.reduce((a, b) => (b.score > a.score ? b : a));
+      const actual = rs[0]!.actual !== undefined ? ` actual=${rs[0]!.actual}` : "";
       console.log(
-        `${id} ours=${ours.join("/").padEnd(12)} rank=${rank.toFixed(1)} rec=[${rec.join(" ")}] best=${winner.name}(${winner.botId}) words=${rs[0]!.words.join(",")}`,
+        `${id} ours=${ours.join("/").padEnd(12)}${actual} rank=${rank.toFixed(1)} rec=[${rec.join(" ")}] best=${winner.name}(${winner.botId}) words=${rs[0]!.words.join(",")}`,
       );
     }
     console.log("");
@@ -333,6 +360,14 @@ async function main() {
   console.log(`recorded field: winner mean ${recBest.toFixed(1)}, all-bot mean ${recMean.toFixed(1)}`);
   if (Object.keys(base).length) console.log(`base params: ${JSON.stringify(base)}`);
   all.forEach((v, vi) => console.log(summaryLine(v.name, by[vi]!, vi === 0 ? null : baseRs)));
+  const real = baseRs.filter((r) => r.actual !== undefined);
+  if (real.length) {
+    // Our bot's real result in the same matches, ranked the same way.
+    const actual = real.map((r) => ({ ...r, score: r.actual! }));
+    console.log(summaryLine("actual (recorded 199)", actual, null).replace(/ tiles=.*/, ""));
+    const [dm, dse] = meanSe(real.map((r) => r.score - r.actual!));
+    console.log(`replayed - actual: ${dm.toFixed(1)}±${dse.toFixed(1)}`);
+  }
 
   // Ours vs each top bot in the matches it played.
   const vsTop: string[] = [];
