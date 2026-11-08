@@ -134,6 +134,10 @@ export interface Params {
   // this) during the last `spendDownFrom` auctions. Coins expire, so a
   // smaller divisor spends harder.
   spendDownDiv: number;
+  // Building prior value weight: multiply the fit-based prior by
+  // (1 + buildValueW * (letterValue - 1)) so 3-4 point consonants are
+  // chosen decisively over filler while a plan does not exist yet.
+  buildValueW: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -192,6 +196,7 @@ export const DEFAULT_PARAMS: Params = {
   allowStaleDistribution: false,
   rewardBias: 0.03,
   spendDownDiv: 3,
+  buildValueW: 0,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -456,7 +461,8 @@ function buildFade(view: MatchView, p: Params): number {
 }
 
 function letterPrior(d: Dictionary, c: number, view: MatchView, p: Params, fade: number): number {
-  const build = fade > 0 ? p.buildW * fade * letterFit(d, view.rack, c, view, p) : 0;
+  const valueMult = 1 + p.buildValueW * Math.min(4, LETTER_VALUE[c]! - 1);
+  const build = fade > 0 ? p.buildW * fade * letterFit(d, view.rack, c, view, p) * valueMult : 0;
   return LETTER_VALUE[c]! * (1 - fade) + build;
 }
 
