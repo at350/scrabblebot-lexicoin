@@ -115,6 +115,9 @@ export interface Params {
   holdRatio: number;
   holdFeas: number;
   holdMinBag: number;
+  // Completion reserve: while one tile away from a word worth at least
+  // this, keep enough coins to win that tile.
+  reserveMinReward: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -166,6 +169,7 @@ export const DEFAULT_PARAMS: Params = {
   holdRatio: 1.2,
   holdFeas: 0.35,
   holdMinBag: 12,
+  reserveMinReward: 33,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -333,7 +337,7 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
   const scale = moneyScale(view, p);
   let amount = marginal * p.coinsPerPoint * scale;
 
-  if (p.selective) return decideSelective(d, c, view, p, before.value, marginal, after.best);
+  if (p.selective) return decideSelective(d, c, view, p, before.value, marginal, after.best, before.best);
 
   // Building bid: with few tiles there is no concrete plan yet, but every
   // long word needs seven tiles, so buy well-fitting ones at market.
@@ -433,7 +437,7 @@ function rackToKey(r: Rack): string {
   return s;
 }
 
-function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, marginal: number, plan: Plan | null): BidDecision {
+function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, marginal: number, plan: Plan | null, current: Plan | null): BidDecision {
   const remaining = view.bagRemaining + 1;
   // We pay the second price, not our bid: budget tiles at the paid level.
   const avgPaid = p.priceA + p.priceB * 1.9;
@@ -487,12 +491,32 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // when the rack already holds unplayed heavy tiles: Q+X+Z together is a
   // dead rack, not a plan.
   let heavyHeld = 0;
-  for (let i = 0; i < 26; i++) if (LETTER_VALUE[i]! >= 5) heavyHeld += view.rack[i]!;
-  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && affordable >= 4 && heavyHeld < 2 && des >= threshold * 0.5) {
+  let vowelsHeld = 0;
+  for (let i = 0; i < 26; i++) {
+    if (LETTER_VALUE[i]! >= 5) heavyHeld += view.rack[i]!;
+    if (VOWEL_MASK & (1 << i)) vowelsHeld += view.rack[i]!;
+  }
+  // A second heavy tile is fine when the rack has the vowels to carry it
+  // (EQUINOX, MITZVAH); a third is a dead rack.
+  const heavyOk = heavyHeld === 0 || (heavyHeld === 1 && vowelsHeld >= 2) || (heavyHeld === 2 && vowelsHeld >= 3 && LETTER_VALUE[c]! <= 5);
+  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && affordable >= 4 && heavyOk && des >= threshold * 0.5) {
     const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp * Math.min(1, affordable / 7);
     if (heavy > amount) {
       amount = heavy;
       mode = "heavy";
+    }
+  }
+  // Completion reserve: one tile from a good word, keep the coins to buy
+  // that tile; filler can wait.
+  if (!completes && remaining > p.spendDownFrom && current && current.missing.length === 1 && current.reward >= p.reserveMinReward) {
+    const need = current.missing[0]!;
+    if (need !== c) {
+      const reserve = Math.min(view.balance, winPrice(view, p, need));
+      const spendable = Math.max(0, view.balance - reserve);
+      if (amount > spendable) {
+        amount = spendable;
+        mode += "+rsv";
+      }
     }
   }
   if (remaining <= p.spendDownFrom && amount > 0) {
