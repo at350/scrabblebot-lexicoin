@@ -174,7 +174,7 @@ export const DEFAULT_PARAMS: Params = {
   paceSlack: 12,
   paceGain: 30,
   paceTotal: 180,
-  paceCurve: 1.4,
+  paceCurve: 1.0,
   minFraction: 0.12,
   autoPlayMinRewardLate: 36,
   lateFromRemaining: 24,
@@ -499,7 +499,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   const planned = Math.max(hadInAll, p.paceTotal) * Math.pow(elapsed, p.paceCurve);
   const spent = hadInAll - view.balance;
   const behind = planned - spent; // > 0: under-spending
-  const paceAdj = remaining > p.spendDownFrom ? Math.max(0.4, Math.min(1.6, 1 + (behind + p.paceSlack) / p.paceGain)) : 1;
+  const paceAdj = remaining > p.spendDownFrom ? Math.max(0.55, Math.min(1.6, 1 + (behind + p.paceSlack) / p.paceGain)) : 1;
   const affordable = (view.balance / avgPaid) * p.affordScale * paceAdj;
   // The letter prior (a heavy tile is worth 3x its value in some future
   // word) only matters while we can still afford to build; when the purse
