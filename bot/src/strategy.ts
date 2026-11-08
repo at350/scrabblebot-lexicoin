@@ -130,6 +130,10 @@ export interface Params {
   // Plan reward bias: words worth more than 35 count for more, cheap long
   // words for less, so building aims at DRIVEWAY-class words.
   rewardBias: number;
+  // End-game spend-down: bid at least balance / min(playable auctions left,
+  // this) during the last `spendDownFrom` auctions. Coins expire, so a
+  // smaller divisor spends harder.
+  spendDownDiv: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -187,6 +191,7 @@ export const DEFAULT_PARAMS: Params = {
   reserveMinReward: 33,
   allowStaleDistribution: false,
   rewardBias: 0.03,
+  spendDownDiv: 3,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -386,7 +391,7 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
   // that could still end up in a word. Only auctions whose tile can still
   // be played count: the last one can't, the one before only immediately.
   if (remaining <= p.spendDownFrom && amount > 0) {
-    const usefulLeft = Math.max(1, Math.min(remaining - 1, 3));
+    const usefulLeft = Math.max(1, Math.min(remaining - 1, p.spendDownDiv));
     const spendDown = view.balance / usefulLeft;
     if (spendDown > amount) amount = spendDown;
   }
@@ -606,7 +611,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
     }
   }
   if (remaining <= p.spendDownFrom && amount > 0) {
-    const usefulLeft = Math.max(1, Math.min(remaining - 1, 3));
+    const usefulLeft = Math.max(1, Math.min(remaining - 1, p.spendDownDiv));
     const spendDown = view.balance / usefulLeft;
     if (spendDown > amount) amount = spendDown;
   }
