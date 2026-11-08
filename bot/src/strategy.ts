@@ -138,6 +138,11 @@ export interface Params {
   // (1 + buildValueW * (letterValue - 1)) so 3-4 point consonants are
   // chosen decisively over filler while a plan does not exist yet.
   buildValueW: number;
+  // Adaptive fishing floor: token bids track the observed in-match second
+  // price for 1-point letters (minus this margin), so in a pricey field the
+  // bot still picks up filler at the going rate instead of never winning.
+  fishTrack: boolean;
+  fishTrackMargin: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -197,6 +202,8 @@ export const DEFAULT_PARAMS: Params = {
   rewardBias: 0.03,
   spendDownDiv: 3,
   buildValueW: 0,
+  fishTrack: false,
+  fishTrackMargin: 1,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -569,7 +576,12 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
     amount = des * p.coinsPerPoint * p.fishMult * scale;
     // Rivals run out of coins mid-match and tiles go for 5-9; a token bid
     // on any letter we could use picks those up.
-    if (des > 1.5 && view.balance >= p.genericMinBalance && amount < p.fishFloor) amount = p.fishFloor;
+    let floor = p.fishFloor;
+    if (p.fishTrack) {
+      const obs = view.priceByValue?.[1];
+      if (obs !== undefined) floor = Math.max(floor, Math.round(obs - p.fishTrackMargin));
+    }
+    if (des > 1.5 && view.balance >= p.genericMinBalance && amount < floor) amount = floor;
     mode = "fish";
   }
   // Heavy letters pay 3x their value in any long word; never let them go

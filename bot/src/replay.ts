@@ -32,7 +32,9 @@ import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { BAG_COUNTS, emptyRack, letterIndex, loadDictionary, rackClone, rackRemoveWord, rackTotal, type Dictionary, type Rack } from "./engine.js";
+import { BAG_COUNTS, emptyRack, letterIndex, loadDictionary, rackClone, rackRemoveWord, rackTotal, type Dictionary, type Rack,
+  LETTER_VALUE,
+} from "./engine.js";
 import { DEFAULT_PARAMS, decideBid, decidePlays, type MatchView, type Params } from "./strategy.js";
 import { rng } from "./sim.js";
 import { DATA_DIR, OURS_DIR, OUR_BOT_ID, TOP_BOTS, type ReplayMatch } from "./pull_matches.js";
@@ -130,6 +132,9 @@ export function replayMatch(d: Dictionary, m: ReplayMatch, params: Params, seed:
     }
   };
 
+  // Observed second prices so far in this match, by letter value (as the
+  // live bot sees them from auction_result).
+  const paidByValue: number[][] = Array.from({ length: 11 }, () => []);
   const view = (bagRemaining: number): MatchView => {
     const pool = emptyRack();
     for (let c = 0; c < 26; c++) pool[c] = BAG_COUNTS[c]! - initial[c]! - auctioned[c]!;
@@ -141,6 +146,7 @@ export function replayMatch(d: Dictionary, m: ReplayMatch, params: Params, seed:
       pool,
       auctionType: "Vickrey",
       opponents: [...opp.values()].map((o) => ({ balance: o.balance, score: o.score })),
+      priceByValue: paidByValue.map((xs) => (xs.length >= 2 ? xs.reduce((a, b) => a + b, 0) / xs.length : undefined)),
     };
   };
 
@@ -169,6 +175,8 @@ export function replayMatch(d: Dictionary, m: ReplayMatch, params: Params, seed:
       rack = rackClone(rack);
       rack[c]++;
     }
+    // Record this auction's second price as the live bot would observe it.
+    if (a.winner !== null && a.paid > 0) paidByValue[LETTER_VALUE[c]!]!.push(a.paid);
     // The last close ends the match instantly: nobody plays after it.
     if (bagRemaining > 0) {
       advance(a.closesAt);
