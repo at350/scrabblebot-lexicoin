@@ -214,11 +214,14 @@ function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: strin
   const started = performance.now();
   const decision = decideBid(DICT, a.letter, view, PARAMS);
   const ms = performance.now() - started;
-  // Refresh the letter ranking after this bid goes out, off the hot path.
-  setImmediate(() => {
-    const t0 = performance.now();
-    if (refreshDistribution() && VERBOSE) log(`m${a.matchId} ranking refreshed in ${(performance.now() - t0).toFixed(0)}ms`);
-  });
+  // Refresh the letter ranking after this bid goes out, one letter per
+  // event-loop turn so incoming auctions are never delayed.
+  const t0 = performance.now();
+  const step = () => {
+    if (refreshDistribution()) setImmediate(step);
+    else if (VERBOSE && performance.now() - t0 > 50) log(`m${a.matchId} ranking refreshed in ${(performance.now() - t0).toFixed(0)}ms`);
+  };
+  setImmediate(step);
   const openedMs = Number(a.opensAt.microsSinceUnixEpoch / 1000n);
   const sinceOpen = Date.now() - openedMs;
   // A re-bid only matters if we can now bid more than before.

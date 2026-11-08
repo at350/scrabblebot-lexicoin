@@ -409,16 +409,18 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
 // (it only changes when the rack does; the bag shrinking barely moves it).
 let distCacheKey = "";
 let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
-let distPending: (() => void) | null = null;
+// Pending refresh, computed one letter per call so the event loop stays
+// responsive (a full 26-letter pass can take hundreds of milliseconds on a
+// loaded machine, and auction notifications must not queue behind it).
+let distPending: { step: () => boolean } | null = null;
 
-// Live bot: call after bidding to compute the ranking the last decision
-// skipped. Returns true if work was done.
+// Live bot: call repeatedly (e.g. via setImmediate) after bidding. Returns
+// true while more work remains.
 export function refreshDistribution(): boolean {
   if (!distPending) return false;
-  const fn = distPending;
-  distPending = null;
-  fn();
-  return true;
+  const more = distPending.step();
+  if (!more) distPending = null;
+  return more;
 }
 
 function distKey(view: MatchView, intrinsicW: number, fade: number): string {
@@ -468,7 +470,25 @@ function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseVa
     // Snapshot the view: the caller's rack array may be reused.
     const snap: MatchView = { ...view, rack: new Int32Array(view.rack), pool: new Int32Array(view.pool) };
     if (p.allowStaleDistribution && distCache.values.length > 0) {
-      distPending = () => computeDistribution(d, snap, p, baseValue, intrinsicW, fade, key);
+      const values: number[] = [];
+      const weights: number[] = [];
+      let c = 0;
+      distPending = {
+        step: () => {
+          while (c < 26 && (snap.pool[c] ?? 0) <= 0) c++;
+          if (c < 26) {
+            values.push(desirability(d, c, snap, p, baseValue, intrinsicW, fade));
+            weights.push(snap.pool[c]!);
+            c++;
+          }
+          if (c >= 26) {
+            distCacheKey = key;
+            distCache = { values, weights };
+            return false;
+          }
+          return true;
+        },
+      };
     } else {
       computeDistribution(d, snap, p, baseValue, intrinsicW, fade, key);
     }
