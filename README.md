@@ -29,7 +29,19 @@ registers itself for any tournament that is taking registrations
 npm run sim            # offline simulator, 200 matches vs modelled opponents
 npm run tune           # parameter sweep
 npm run trace -- 3     # one simulated match, every bid explained
+npm run pull           # cache 150 recorded live matches (top bots first)
+npm run replay         # replay them with our strategy as a 7th bidder
+npx tsx src/replay.ts 150 1 --sweep coinsPerPoint=1.5,2.5 --vs paceTotal=200
+npx tsx src/pull_matches.ts 60 --ours && npx tsx src/replay.ts 60 1 --ours
+                       # check: replayed vs real score in matches we played
 ```
+
+The replay evaluator is the better yardstick: sealed-bid Vickrey bids don't
+depend on each other, so inserting our bids against the recorded top bids
+(win iff we bid more, pay their top bid) shows what our strategy would have
+scored against the real field. Variants share deals, so `Δ` is paired.
+It defaults to two worker processes at nice 15; don't raise that while the
+live bot runs on the same machine.
 
 ## How it plays
 
@@ -80,6 +92,7 @@ tournament status, and reconnects with backoff.
 | `bot/src/index.ts` | SpacetimeDB client, subscriptions, match lifecycle |
 | `bot/src/sim.ts` | match simulator with opponents calibrated to live top-bid data |
 | `bot/src/tune.ts`, `trace.ts` | parameter sweeps and single-match traces |
+| `bot/src/pull_matches.ts`, `replay.ts` | recorded-match cache (`bot/data/replay*/`) and replay evaluator |
 | `bot/src/module_bindings/` | generated from the game module (`spacetime generate`) |
 | `data/wordlist.txt` | ENABLE word list, same as the server |
 
