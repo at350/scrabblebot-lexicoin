@@ -85,6 +85,7 @@ interface MatchTrack {
   paidByValue: number[][]; // observed second prices by letter value
   bidsSubmitted: Map<string, number>; // auction id -> amount we last submitted (0 = passed)
   subscribed: boolean;
+  handle: { unsubscribe(): void } | null;
   bids: number;
   wins: number;
   spent: number;
@@ -101,6 +102,7 @@ function trackFor(matchId: bigint): MatchTrack {
       paidByValue: Array.from({ length: 11 }, () => []),
       bidsSubmitted: new Map(),
       subscribed: false,
+      handle: null,
       bids: 0,
       wins: 0,
       spent: 0,
@@ -351,7 +353,7 @@ function subscribeMatch(c: DbConnection, matchId: bigint) {
   if (t.subscribed) return;
   t.subscribed = true;
   const id = matchId.toString();
-  c.subscriptionBuilder()
+  t.handle = c.subscriptionBuilder()
     .onApplied(() => {
       log(`m${matchId} subscribed`);
       // Catch up on anything already there.
@@ -381,10 +383,11 @@ function onBotReady(c: DbConnection) {
   if (lobbyTimer) clearInterval(lobbyTimer);
   lobbyTimer = setInterval(() => {
     if (!conn) return;
-    joinLobby(conn, "periodic");
-    registerTournaments(conn);
-    const mid = inRunningMatch(conn);
-    if (mid !== null) tryPlay(conn, mid, "periodic");
+    // Keep this cheap: plays are driven by rack and auction events.
+    if (inRunningMatch(conn) === null) {
+      joinLobby(conn, "periodic");
+      registerTournaments(conn);
+    }
   }, 10_000);
 }
 
@@ -446,6 +449,15 @@ function wireCallbacks(c: DbConnection) {
         const place = all.findIndex((p) => p.botId === myBotId) + 1;
         log(`m${neu.id} ENDED: score=${me.score} balance=${me.balance} place=${place}/${all.length} bids=${t?.bids ?? 0} wins=${t?.wins ?? 0} spent=${t?.spent ?? 0}; scores=${all.map((p) => `${c.db.bot.id.find(p.botId)?.name ?? p.botId}:${p.score}`).join(" ")}`);
         setTimeout(() => conn && joinLobby(conn, "match ended"), 300);
+        // Drop this match's live tables so subscriptions don't pile up over
+        // a long session (every extra query costs the server per update).
+        setTimeout(() => {
+          try {
+            t?.handle?.unsubscribe();
+          } catch (err) {
+            warn(`unsubscribe m${neu.id} failed: ${err instanceof Error ? err.message : err}`);
+          }
+        }, 5000);
       }
     }
   });
