@@ -140,8 +140,8 @@ export const DEFAULT_PARAMS: Params = {
   decisiveMult: 1.0,
   fishMult: 0.5,
   intrinsicW: 1.0,
-  affordScale: 1.0,
-  fishFloor: 10,
+  affordScale: 1.3,
+  fishFloor: 12,
   buildW: 5,
 };
 
@@ -346,29 +346,34 @@ let distCacheKey = "";
 let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
 
 // With fewer tiles than a long word minus the allowed missing count, no
-// plan exists yet; rank letters by how well they build toward one.
-function buildTerm(d: Dictionary, c: number, view: MatchView, p: Params): number {
+// plan exists yet. Then letters are ranked by how well they build toward
+// one (fit: vowel balance, versatility, efficiency), not by face value: a
+// word needs seven tiles, and heavy letters alone never make one.
+function buildFade(view: MatchView, p: Params): number {
   const total = rackTotal(view.rack);
   const full = p.minTargetLen - p.maxMissing; // rack size at which plans appear
-  const fade = total <= full ? 1 : Math.max(0, 1 - (total - full) / 4);
-  if (fade <= 0) return 0;
-  return p.buildW * fade * letterFit(d, view.rack, c, view, p);
+  return total <= full ? 1 : Math.max(0, 1 - (total - full) / 4);
 }
 
-function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, intrinsicW: number): number {
+function letterPrior(d: Dictionary, c: number, view: MatchView, p: Params, fade: number): number {
+  const build = fade > 0 ? p.buildW * fade * letterFit(d, view.rack, c, view, p) : 0;
+  return LETTER_VALUE[c]! * (1 - fade) + build;
+}
+
+function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, intrinsicW: number, fade: number): number {
   const after = evaluateRack(d, rackAdd(view.rack, c), view, p).value;
-  return Math.max(0, after - baseValue) + intrinsicW * (LETTER_VALUE[c]! + buildTerm(d, c, view, p));
+  return Math.max(0, after - baseValue) + intrinsicW * letterPrior(d, c, view, p, fade);
 }
 
-function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number, intrinsicW: number): number {
-  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}|${intrinsicW.toFixed(2)}`;
+function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number, intrinsicW: number, fade: number): number {
+  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}|${intrinsicW.toFixed(2)}|${fade.toFixed(2)}`;
   if (key !== distCacheKey) {
     const values: number[] = [];
     const weights: number[] = [];
     for (let c = 0; c < 26; c++) {
       const n = view.pool[c] ?? 0;
       if (n <= 0) continue;
-      values.push(desirability(d, c, view, p, baseValue, intrinsicW));
+      values.push(desirability(d, c, view, p, baseValue, intrinsicW, fade));
       weights.push(n);
     }
     distCacheKey = key;
@@ -403,9 +408,10 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // word) only matters while we can still afford to build; when the purse
   // is down to a tile or two, only completing a plan counts.
   const intrinsicW = p.intrinsicW * Math.min(1, affordable / 4);
-  const des = marginal + intrinsicW * (LETTER_VALUE[c]! + buildTerm(d, c, view, p));
+  const fade = buildFade(view, p);
+  const des = marginal + intrinsicW * letterPrior(d, c, view, p, fade);
   const fraction = Math.max(0.05, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
-  const threshold = desirabilityThreshold(d, view, p, baseValue, fraction, intrinsicW);
+  const threshold = desirabilityThreshold(d, view, p, baseValue, fraction, intrinsicW, fade);
   const scale = moneyScale(view, p);
   const win = winPrice(view, p, c);
   let amount: number;
