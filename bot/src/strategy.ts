@@ -146,7 +146,7 @@ export const DEFAULT_PARAMS: Params = {
   // Q ~32, Z ~50. Bidding here wins ~75% of auctions at the second price.
   winA: 15.5,
   winB: 2.5,
-  heavyCpp: 1.2,
+  heavyCpp: 1.8,
   autoPlayMinReward: 42,
   autoPlayRack: 11,
   scaleLow: 0.8,
