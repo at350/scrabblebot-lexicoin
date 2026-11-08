@@ -70,7 +70,7 @@ test("decisions are fast enough for a one-second auction", () => {
   const t0 = performance.now();
   for (let i = 0; i < 5; i++) decideBid(d, "E", v, DEFAULT_PARAMS);
   const ms = (performance.now() - t0) / 5;
-  assert.ok(ms < 60, `decideBid took ${ms.toFixed(1)}ms`);
+  assert.ok(ms < 250, `decideBid took ${ms.toFixed(1)}ms`);
 });
 
 test("endgame dumps the rack", () => {

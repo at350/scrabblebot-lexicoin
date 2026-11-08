@@ -29,6 +29,7 @@ import {
   DEFAULT_PARAMS,
   decideBid,
   decidePlays,
+  refreshDistribution,
   type MatchView,
   type Params,
 } from "./strategy.js";
@@ -46,7 +47,7 @@ const AUTO_LOBBY = (process.env.AUTO_LOBBY ?? "1") !== "0";
 const LOBBY_WHILE_REGISTERED = (process.env.LOBBY_WHILE_REGISTERED ?? "0") !== "0";
 const VERBOSE = (process.env.VERBOSE ?? "1") !== "0";
 const TOKEN_PATH = path.join(process.cwd(), `.token-${BOT_NAME}`);
-const PARAMS: Params = { ...DEFAULT_PARAMS, ...(process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {}) };
+const PARAMS: Params = { ...DEFAULT_PARAMS, allowStaleDistribution: true, ...(process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {}) };
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 const DICT_PATH = process.env.WORDLIST ?? path.join(here, "..", "..", "data", "wordlist.txt");
@@ -213,6 +214,11 @@ function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: strin
   const started = performance.now();
   const decision = decideBid(DICT, a.letter, view, PARAMS);
   const ms = performance.now() - started;
+  // Refresh the letter ranking after this bid goes out, off the hot path.
+  setImmediate(() => {
+    const t0 = performance.now();
+    if (refreshDistribution() && VERBOSE) log(`m${a.matchId} ranking refreshed in ${(performance.now() - t0).toFixed(0)}ms`);
+  });
   const openedMs = Number(a.opensAt.microsSinceUnixEpoch / 1000n);
   const sinceOpen = Date.now() - openedMs;
   // A re-bid only matters if we can now bid more than before.

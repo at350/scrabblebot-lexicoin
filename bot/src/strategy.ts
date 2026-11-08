@@ -123,6 +123,10 @@ export interface Params {
   // Completion reserve: while one tile away from a word worth at least
   // this, keep enough coins to win that tile.
   reserveMinReward: number;
+  // Live only: when the rack just changed, bid with the previous letter
+  // ranking and refresh it afterwards (see refreshDistribution), instead of
+  // spending hundreds of milliseconds inside the auction window.
+  allowStaleDistribution: boolean;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -178,6 +182,7 @@ export const DEFAULT_PARAMS: Params = {
   holdFeas: 0.35,
   holdMinBag: 12,
   reserveMinReward: 33,
+  allowStaleDistribution: false,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -399,6 +404,34 @@ export function decideBid(d: Dictionary, letter: string, view: MatchView, p: Par
 // (it only changes when the rack does; the bag shrinking barely moves it).
 let distCacheKey = "";
 let distCache: { values: number[]; weights: number[] } = { values: [], weights: [] };
+let distPending: (() => void) | null = null;
+
+// Live bot: call after bidding to compute the ranking the last decision
+// skipped. Returns true if work was done.
+export function refreshDistribution(): boolean {
+  if (!distPending) return false;
+  const fn = distPending;
+  distPending = null;
+  fn();
+  return true;
+}
+
+function distKey(view: MatchView, intrinsicW: number, fade: number): string {
+  return `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}|${intrinsicW.toFixed(2)}|${fade.toFixed(2)}`;
+}
+
+function computeDistribution(d: Dictionary, view: MatchView, p: Params, baseValue: number, intrinsicW: number, fade: number, key: string) {
+  const values: number[] = [];
+  const weights: number[] = [];
+  for (let c = 0; c < 26; c++) {
+    const n = view.pool[c] ?? 0;
+    if (n <= 0) continue;
+    values.push(desirability(d, c, view, p, baseValue, intrinsicW, fade));
+    weights.push(n);
+  }
+  distCacheKey = key;
+  distCache = { values, weights };
+}
 
 // With fewer tiles than a long word minus the allowed missing count, no
 // plan exists yet. Then letters are ranked by how well they build toward
@@ -415,24 +448,25 @@ function letterPrior(d: Dictionary, c: number, view: MatchView, p: Params, fade:
   return LETTER_VALUE[c]! * (1 - fade) + build;
 }
 
+// The distribution over 26 letters is the expensive part of a decision, so
+// it uses the shallow valuation; the auctioned letter itself gets the full
+// one. The threshold it sets is only a ranking cut, so the approximation
+// costs little.
 function desirability(d: Dictionary, c: number, view: MatchView, p: Params, baseValue: number, intrinsicW: number, fade: number): number {
-  const after = evaluateRack(d, rackAdd(view.rack, c), view, p).value;
+  const after = evaluateRack(d, rackAdd(view.rack, c), view, p, 0).value;
   return Math.max(0, after - baseValue) + intrinsicW * letterPrior(d, c, view, p, fade);
 }
 
 function desirabilityThreshold(d: Dictionary, view: MatchView, p: Params, baseValue: number, fraction: number, intrinsicW: number, fade: number): number {
-  const key = `${rackToKey(view.rack)}|${Math.floor(view.bagRemaining / 6)}|${intrinsicW.toFixed(2)}|${fade.toFixed(2)}`;
+  const key = distKey(view, intrinsicW, fade);
   if (key !== distCacheKey) {
-    const values: number[] = [];
-    const weights: number[] = [];
-    for (let c = 0; c < 26; c++) {
-      const n = view.pool[c] ?? 0;
-      if (n <= 0) continue;
-      values.push(desirability(d, c, view, p, baseValue, intrinsicW, fade));
-      weights.push(n);
+    // Snapshot the view: the caller's rack array may be reused.
+    const snap: MatchView = { ...view, rack: new Int32Array(view.rack), pool: new Int32Array(view.pool) };
+    if (p.allowStaleDistribution && distCache.values.length > 0) {
+      distPending = () => computeDistribution(d, snap, p, baseValue, intrinsicW, fade, key);
+    } else {
+      computeDistribution(d, snap, p, baseValue, intrinsicW, fade, key);
     }
-    distCacheKey = key;
-    distCache = { values, weights };
   }
   const { values, weights } = distCache;
   if (values.length === 0) return 0;
