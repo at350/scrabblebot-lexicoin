@@ -278,8 +278,11 @@ export function letterFit(d: Dictionary, rack: Rack, c: number, view: MatchView,
   // Versatility: E/S/A/R/I ~ 0.45-0.65, Q/Z/J/X ~ 0.02-0.04.
   const vers = 0.75 + 0.9 * Math.sqrt(d.containFrac[c]!);
   const price = winPrice(view, p, c);
-  const efficiency = (3 * LETTER_VALUE[c]!) / Math.max(1, price);
-  return dup * balance * vers * (1 + p.efficiencyWeight * (efficiency - 0.5));
+  // Points per coin in a long word, capped so the rare heavy tiles don't
+  // dominate the building phase (plans handle those once the rack can
+  // carry them); 3-4 point consonants land level with the best vowels.
+  const efficiency = Math.min(0.5, (3 * LETTER_VALUE[c]!) / Math.max(1, price));
+  return dup * balance * vers * (1 + p.efficiencyWeight * (efficiency - 0.35));
 }
 
 export function moneyScale(view: MatchView, p: Params): number {
