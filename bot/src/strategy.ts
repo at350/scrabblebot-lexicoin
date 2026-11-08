@@ -171,7 +171,7 @@ export const DEFAULT_PARAMS: Params = {
   fishMult: 0.5,
   intrinsicW: 1.0,
   affordScale: 1.3,
-  fishFloor: 12,
+  fishFloor: 9,
   buildW: 5,
   secondPlanW: 0.5,
   paceSlack: 12,
@@ -186,7 +186,7 @@ export const DEFAULT_PARAMS: Params = {
   holdMinBag: 12,
   reserveMinReward: 33,
   allowStaleDistribution: false,
-  rewardBias: 0.012,
+  rewardBias: 0.03,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
