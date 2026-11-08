@@ -228,23 +228,27 @@ export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Para
 
   let optionMass = 0;
   const total = rackTotal(rack);
-  const maxLen = Math.min(p.maxTargetLen, total + p.maxMissing);
+  // Only tiles drawn before the last auction can still be played.
+  const horizon = Math.max(0, view.bagRemaining - 1);
+  const maxLen = Math.min(p.maxTargetLen, total + Math.min(p.maxMissing, horizon));
   const need = new Int32Array(26);
-  for (const nw of nearWords(d, rack, p.maxMissing, p.minTargetLen, maxLen)) {
+  for (const nw of nearWords(d, rack, Math.min(p.maxMissing, horizon), p.minTargetLen, maxLen)) {
     const k = nw.missing.length;
+    if (k > horizon) continue;
     let feas = 1;
     let cost = 0;
     if (k > 0) {
       need.fill(0);
       for (const c of nw.missing) {
-        feas *= pAppears(view.pool, view.bagRemaining, c, need[c]!) * p.winProb;
+        feas *= pAppears(view.pool, horizon, c, need[c]!) * p.winProb;
         need[c]!++;
         cost += marketPrice(view, p, c);
       }
     }
-    // Net of the coins the missing tiles will cost; coins have no value at
-    // the end, but spending them here means not spending them elsewhere.
-    const net = feas * (nw.reward - 0.5 * cost);
+    // Net of the coins the missing tiles will cost (at the match's
+    // points-per-coin exchange rate); coins have no value at the end, but
+    // spending them here means not spending them elsewhere.
+    const net = feas * (nw.reward - cost / p.coinsPerPoint);
     if (net > bestValue) {
       bestValue = net;
       best = { word: nw.word, reward: nw.reward, missing: nw.missing, feasibility: feas, net };
@@ -478,7 +482,9 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // Does this tile complete a long word right now? Then its value is
   // concrete and worth paying for; otherwise it is one step of a plan and
   // must fit the budget: never more than a third of the purse on one tile.
-  const completes = plan !== null && plan.missing.length === 0 && plan.word.length >= p.minTargetLen;
+  let usesTile = 0;
+  if (plan) for (let i = 0; i < plan.word.length; i++) if (plan.word.charCodeAt(i) - 65 === c) usesTile++;
+  const completes = plan !== null && plan.missing.length === 0 && plan.word.length >= p.minTargetLen && usesTile > view.rack[c]!;
   if (des >= threshold && des > 0) {
     amount = win * p.decisiveMult * Math.max(0.8, Math.min(1.1, scale));
     if (completes) amount = Math.max(amount, des * p.coinsPerPoint);
@@ -516,6 +522,13 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
       amount = heavy;
       mode = "heavy";
     }
+  }
+  // Budget cap applies to every speculative bid, floors included: heavy
+  // tiles may take a bit more of the purse, but never most of it.
+  if (!completes && remaining > p.spendDownFrom) {
+    const share = LETTER_VALUE[c]! >= 5 ? 2.2 : 3;
+    const cap = Math.max(view.balance / share, Math.min(view.balance, p.winA + p.winB)) * Math.min(1, paceAdj);
+    if (amount > cap) amount = cap;
   }
   // Completion reserve: one tile from a good word, keep the coins to buy
   // that tile; filler can wait.
@@ -574,8 +587,8 @@ export function decidePlays(d: Dictionary, view: MatchView, p: Params): Playable
       for (const nw of nearWords(d, r, 1, p.minTargetLen, rackTotal(r) + 1)) {
         if (nw.missing.length !== 1 || nw.reward < best.reward * p.holdRatio) continue;
         const c = nw.missing[0]!;
-        const feas = pAppears(view.pool, view.bagRemaining, c, 0) * p.winProb;
-        if (feas >= p.holdFeas && nw.reward > upgrade) upgrade = nw.reward;
+        const feas = pAppears(view.pool, Math.max(0, view.bagRemaining - 1), c, 0) * p.winProb;
+        if (feas >= p.holdFeas && winPrice(view, p, c) <= view.balance && nw.reward > upgrade) upgrade = nw.reward;
       }
       if (upgrade > 0) break;
     }

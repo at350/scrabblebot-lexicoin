@@ -82,7 +82,7 @@ log(`dictionary: ${DICT.words.length} words in ${(performance.now() - t0).toFixe
 interface MatchTrack {
   matchId: bigint;
   paidByValue: number[][]; // observed second prices by letter value
-  bidsSubmitted: Set<string>;
+  bidsSubmitted: Map<string, number>; // auction id -> amount we last submitted (0 = passed)
   subscribed: boolean;
   bids: number;
   wins: number;
@@ -98,7 +98,7 @@ function trackFor(matchId: bigint): MatchTrack {
     t = {
       matchId,
       paidByValue: Array.from({ length: 11 }, () => []),
-      bidsSubmitted: new Set(),
+      bidsSubmitted: new Map(),
       subscribed: false,
       bids: 0,
       wins: 0,
@@ -198,15 +198,16 @@ function buildView(c: DbConnection, matchId: bigint): MatchView | null {
 
 // ---------- Actions ----------
 
-function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: string; opensAt: { microsSinceUnixEpoch: bigint }; status: { tag: string } }) {
+function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: string; opensAt: { microsSinceUnixEpoch: bigint }; status: { tag: string } }, rebid = false) {
   if (myBotId === null) return;
   if (a.status.tag !== "Open") return;
   const t = trackFor(a.matchId);
   const key = String(a.id);
-  if (t.bidsSubmitted.has(key)) return;
+  const previous = t.bidsSubmitted.get(key);
+  if (previous !== undefined && !rebid) return;
   const me = participant(c, a.matchId);
   if (!me) return; // not our match
-  t.bidsSubmitted.add(key);
+  if (!rebid) t.bidsSubmitted.set(key, 0);
   const view = buildView(c, a.matchId);
   if (!view) return;
   const started = performance.now();
@@ -214,15 +215,26 @@ function tryBid(c: DbConnection, a: { id: bigint; matchId: bigint; letter: strin
   const ms = performance.now() - started;
   const openedMs = Number(a.opensAt.microsSinceUnixEpoch / 1000n);
   const sinceOpen = Date.now() - openedMs;
+  // A re-bid only matters if we can now bid more than before.
+  if (rebid && decision.amount <= (previous ?? 0)) return;
   if (decision.amount <= 0) {
     if (VERBOSE) log(`m${a.matchId} '${a.letter}' bag=${view.bagRemaining} rack=${rackToString(view.rack)} bal=${view.balance} -> pass [${decision.reason}] ${ms.toFixed(1)}ms +${sinceOpen}ms`);
     return;
   }
-  t.bids++;
+  t.bidsSubmitted.set(key, decision.amount);
+  if (!rebid) t.bids++;
   c.reducers
     .submitBid({ auctionId: a.id, amount: BigInt(decision.amount) })
     .catch((err: unknown) => warn(`bid ${decision.amount} on '${a.letter}' (auction ${a.id}) failed: ${err instanceof Error ? err.message : err}`));
-  if (VERBOSE) log(`m${a.matchId} '${a.letter}' bag=${view.bagRemaining} rack=${rackToString(view.rack)} bal=${view.balance} -> bid ${decision.amount} [${decision.reason}] ${ms.toFixed(1)}ms +${sinceOpen}ms`);
+  if (VERBOSE) log(`m${a.matchId} '${a.letter}' bag=${view.bagRemaining} rack=${rackToString(view.rack)} bal=${view.balance} -> ${rebid ? "REBID" : "bid"} ${decision.amount} [${decision.reason}] ${ms.toFixed(1)}ms +${sinceOpen}ms`);
+}
+
+// After a word pays out mid-auction, the open auction may deserve a bigger
+// bid than the one we placed (or the pass) while poorer.
+function rebidOpen(c: DbConnection, matchId: bigint) {
+  for (const a of c.db.auction.iter()) {
+    if (a.matchId === matchId && a.status.tag === "Open") tryBid(c, a, true);
+  }
 }
 
 const playInFlight = new Map<string, number>();
@@ -401,6 +413,11 @@ function wireCallbacks(c: DbConnection) {
   c.db.myRack.onInsert((_ctx, h) => tryPlay(c, h.matchId, "rack insert"));
   c.db.myRack.onUpdate((_ctx, _o, h) => tryPlay(c, h.matchId, "rack update"));
   c.db.myRack.onDelete((_ctx, h) => tryPlay(c, h.matchId, "rack delete"));
+
+  c.db.matchParticipant.onUpdate((_ctx, old, p) => {
+    if (myBotId === null || p.botId !== myBotId) return;
+    if (p.balance > old.balance) rebidOpen(c, p.matchId);
+  });
 
   c.db.matchParticipant.onInsert((_ctx, p) => {
     if (myBotId === null || p.botId !== myBotId) return;

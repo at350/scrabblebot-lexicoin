@@ -218,10 +218,13 @@ export function runMatch(d: Dictionary, specs: OpponentKind[], r: Rng, auctionTy
     }
     // After each close, real bots may play (rack changed or endgame).
     // The last auction's close ends the match instantly: nobody plays.
+    // Live, the next auction has already opened (and its tile left the bag)
+    // when bots react to a close, so they see one fewer tile in the bag.
     if (bagRemaining > 0) {
+      const seen = bagRemaining - 1;
       for (const p of players) {
-        if (p.spec.kind === "ours") oursPlay(p, bagRemaining);
-        else if (p.spec.kind === "model") modelPlay(d, p, bagRemaining);
+        if (p.spec.kind === "ours") oursPlay(p, seen);
+        else if (p.spec.kind === "model") modelPlay(d, p, seen);
       }
     }
   }
