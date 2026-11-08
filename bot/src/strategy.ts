@@ -109,7 +109,12 @@ export interface Params {
   paceSlack: number; // coins of overspend tolerated before bids shrink
   paceGain: number; // coins behind/ahead per unit of adjustment
   paceTotal: number; // coins a strong bot spends over a whole match
+  paceCurve: number; // exponent on elapsed fraction: >1 spends slowly early, fast late
   minFraction: number; // never target fewer than this share of remaining tiles
+  // Cash threshold for long words early vs late (top bots hold 30-47 point
+  // words early for an upgrade, then take what they have).
+  autoPlayMinRewardLate: number;
+  lateFromRemaining: number; // auctions remaining at which the late threshold applies
   // Hold a playable long word when one more tile would upgrade it by this
   // ratio with at least this probability (e.g. MEDIATIVE 45 -> ITEMIZED 60).
   holdRatio: number;
@@ -135,7 +140,7 @@ export const DEFAULT_PARAMS: Params = {
   winA: 15.5,
   winB: 2.5,
   heavyCpp: 1.2,
-  autoPlayMinReward: 33,
+  autoPlayMinReward: 42,
   autoPlayRack: 11,
   scaleLow: 0.8,
   scaleHigh: 2.0,
@@ -144,7 +149,7 @@ export const DEFAULT_PARAMS: Params = {
   autoPlayMinLen: 7,
   lowBalance: 12,
   lowBalanceMinReward: 20,
-  endgameDump: 2,
+  endgameDump: 1,
   maxRackHold: 14,
   firstPriceShade: 0.65,
   coinsPerPoint: 2.0,
@@ -164,8 +169,11 @@ export const DEFAULT_PARAMS: Params = {
   secondPlanW: 0.5,
   paceSlack: 12,
   paceGain: 30,
-  paceTotal: 175,
+  paceTotal: 180,
+  paceCurve: 1.4,
   minFraction: 0.12,
+  autoPlayMinRewardLate: 36,
+  lateFromRemaining: 24,
   holdRatio: 1.2,
   holdFeas: 0.35,
   holdMinBag: 12,
@@ -450,7 +458,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   const total68 = 68;
   const elapsed = Math.max(0, Math.min(1, (total68 - remaining) / total68));
   const hadInAll = 100 + view.score;
-  const planned = Math.max(hadInAll, p.paceTotal) * elapsed;
+  const planned = Math.max(hadInAll, p.paceTotal) * Math.pow(elapsed, p.paceCurve);
   const spent = hadInAll - view.balance;
   const behind = planned - spent; // > 0: under-spending
   const paceAdj = remaining > p.spendDownFrom ? Math.max(0.4, Math.min(1.6, 1 + (behind + p.paceSlack) / p.paceGain)) : 1;
@@ -502,7 +510,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // A second heavy tile is fine when the rack has the vowels to carry it
   // (EQUINOX, MITZVAH); a third is a dead rack.
   const heavyOk = heavyHeld === 0 || (heavyHeld === 1 && vowelsHeld >= 2) || (heavyHeld === 2 && vowelsHeld >= 3 && LETTER_VALUE[c]! <= 5);
-  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && affordable >= 4 && heavyOk && des >= threshold * 0.5) {
+  if (LETTER_VALUE[c]! >= 5 && remaining > p.spendDownFrom && affordable >= 3 && heavyOk && des >= threshold * 0.5) {
     const heavy = 3 * LETTER_VALUE[c]! * p.heavyCpp * Math.min(1, affordable / 7);
     if (heavy > amount) {
       amount = heavy;
@@ -558,7 +566,8 @@ export function decidePlays(d: Dictionary, view: MatchView, p: Params): Playable
     const best = bestPlayable(d, r, p.autoPlayMinLen);
     if (!best) break;
     const bloated = rackTotal(r) >= p.autoPlayRack;
-    if (best.reward < p.autoPlayMinReward && !bloated && view.balance >= p.lowBalance) break;
+    const minReward = view.bagRemaining + 1 <= p.lateFromRemaining ? p.autoPlayMinRewardLate : p.autoPlayMinReward;
+    if (best.reward < minReward && !bloated && view.balance >= p.lowBalance) break;
     // Worth waiting one tile for a much better word?
     if (plays.length === 0 && !bloated && view.balance >= p.lowBalance && view.bagRemaining >= p.holdMinBag) {
       let upgrade = 0;
