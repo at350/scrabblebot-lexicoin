@@ -108,6 +108,8 @@ export interface Params {
   // Ahead of schedule -> buy less; behind -> widen the target.
   paceSlack: number; // coins of overspend tolerated before bids shrink
   paceGain: number; // coins behind/ahead per unit of adjustment
+  paceTotal: number; // coins a strong bot spends over a whole match
+  minFraction: number; // never target fewer than this share of remaining tiles
   // Hold a playable long word when one more tile would upgrade it by this
   // ratio with at least this probability (e.g. MEDIATIVE 45 -> ITEMIZED 60).
   holdRatio: number;
@@ -159,6 +161,8 @@ export const DEFAULT_PARAMS: Params = {
   secondPlanW: 0.5,
   paceSlack: 12,
   paceGain: 30,
+  paceTotal: 175,
+  minFraction: 0.12,
   holdRatio: 1.2,
   holdFeas: 0.35,
   holdMinBag: 12,
@@ -439,7 +443,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   const total68 = 68;
   const elapsed = Math.max(0, Math.min(1, (total68 - remaining) / total68));
   const hadInAll = 100 + view.score;
-  const planned = hadInAll * elapsed;
+  const planned = Math.max(hadInAll, p.paceTotal) * elapsed;
   const spent = hadInAll - view.balance;
   const behind = planned - spent; // > 0: under-spending
   const paceAdj = remaining > p.spendDownFrom ? Math.max(0.4, Math.min(1.6, 1 + (behind + p.paceSlack) / p.paceGain)) : 1;
@@ -450,7 +454,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   const intrinsicW = p.intrinsicW * Math.min(1, affordable / 4);
   const fade = buildFade(view, p);
   const des = marginal + intrinsicW * letterPrior(d, c, view, p, fade);
-  const fraction = Math.max(0.05, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
+  const fraction = Math.max(p.minFraction, Math.min(0.95, affordable / Math.max(1, remaining - 1)));
   const threshold = desirabilityThreshold(d, view, p, baseValue, fraction, intrinsicW, fade);
   const scale = moneyScale(view, p);
   const win = winPrice(view, p, c);
