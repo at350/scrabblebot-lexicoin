@@ -100,6 +100,19 @@ export interface Params {
   affordScale: number; // how many tiles we plan to buy = balance / avgPaidPrice * this
   fishFloor: number; // token bid on any useful letter, to pick up cheap tiles when rivals are broke
   buildW: number; // desirability from letter fit while the rack is too small to have a plan
+  // Weight of the tiles left over after the best plan, valued as a plan of
+  // their own (one level deep). Lets a big rack be worth two words.
+  secondPlanW: number;
+  // Spend pacing: cumulative spend is compared with a linear schedule over
+  // the match (top bots spend ~186 coins at 2-4 tiles per 20 auctions).
+  // Ahead of schedule -> buy less; behind -> widen the target.
+  paceSlack: number; // coins of overspend tolerated before bids shrink
+  paceGain: number; // coins behind/ahead per unit of adjustment
+  // Hold a playable long word when one more tile would upgrade it by this
+  // ratio with at least this probability (e.g. MEDIATIVE 45 -> ITEMIZED 60).
+  holdRatio: number;
+  holdFeas: number;
+  holdMinBag: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -143,6 +156,12 @@ export const DEFAULT_PARAMS: Params = {
   affordScale: 1.3,
   fishFloor: 12,
   buildW: 5,
+  secondPlanW: 0.5,
+  paceSlack: 12,
+  paceGain: 30,
+  holdRatio: 1.2,
+  holdFeas: 0.35,
+  holdMinBag: 12,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -182,7 +201,7 @@ export interface Plan {
 
 // Value of the rack: the best plan's expected net reward, plus a bonus for
 // having many plans. Immediate plays count as plans with nothing missing.
-export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Params): { value: number; best: Plan | null } {
+export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Params, depth = 1): { value: number; best: Plan | null } {
   const immediate = bestPlayable(d, rack, 2);
   const immWeight = immediate && immediate.len < p.minTargetLen && view.bagRemaining > p.spendDownFrom ? p.shortPlayWeight : 1;
   let best: Plan | null = immediate
@@ -216,7 +235,20 @@ export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Para
     }
     if (net > 0) optionMass += net;
   }
-  return { value: bestValue + p.optionBonus * Math.log1p(optionMass / 20), best };
+  let value = bestValue + p.optionBonus * Math.log1p(optionMass / 20);
+  // What the rest of the rack is worth once the best word is gone.
+  if (depth > 0 && p.secondPlanW > 0 && best && best.word.length >= p.minTargetLen) {
+    const leftover = new Int32Array(rack);
+    for (let i = 0; i < best.word.length; i++) {
+      const c = best.word.charCodeAt(i) - 65;
+      if (leftover[c]! > 0) leftover[c]--;
+    }
+    if (rackTotal(leftover) >= 2) {
+      const sub = evaluateRack(d, leftover, view, p, depth - 1);
+      value += p.secondPlanW * sub.value;
+    }
+  }
+  return { value, best };
 }
 
 const VOWEL_MASK = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 14) | (1 << 20);
@@ -403,7 +435,15 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   const avgPaid = p.priceA + p.priceB * 1.9;
   // How many of the remaining tiles we can afford, as a fraction of what's
   // left (excluding the unplayable last one).
-  const affordable = (view.balance / avgPaid) * p.affordScale;
+  // Pace: planned spend so far is a linear share of everything we've had.
+  const total68 = 68;
+  const elapsed = Math.max(0, Math.min(1, (total68 - remaining) / total68));
+  const hadInAll = 100 + view.score;
+  const planned = hadInAll * elapsed;
+  const spent = hadInAll - view.balance;
+  const behind = planned - spent; // > 0: under-spending
+  const paceAdj = remaining > p.spendDownFrom ? Math.max(0.4, Math.min(1.6, 1 + (behind + p.paceSlack) / p.paceGain)) : 1;
+  const affordable = (view.balance / avgPaid) * p.affordScale * paceAdj;
   // The letter prior (a heavy tile is worth 3x its value in some future
   // word) only matters while we can still afford to build; when the purse
   // is down to a tile or two, only completing a plan counts.
@@ -426,7 +466,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
     else if (remaining > p.spendDownFrom) {
       // Never more than a third of the purse on one speculative tile, but
       // a small purse must still be able to win an ordinary letter.
-      const cap = Math.max(view.balance / 3, Math.min(view.balance, p.winA + p.winB));
+      const cap = Math.max(view.balance / 3, Math.min(view.balance, p.winA + p.winB)) * Math.min(1, paceAdj);
       amount = Math.min(amount, cap);
     }
     mode = completes ? "GO!" : "GO";
@@ -463,7 +503,7 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   return {
     amount,
     marginal,
-    reason: `${mode} d=${des.toFixed(1)} thr=${threshold.toFixed(1)} f=${fraction.toFixed(2)} s=${scale.toFixed(2)} plan=${plan?.word ?? "-"}(${plan?.missing.length ?? 0})`,
+    reason: `${mode} d=${des.toFixed(1)} thr=${threshold.toFixed(1)} f=${fraction.toFixed(2)} pace=${paceAdj.toFixed(2)} s=${scale.toFixed(2)} plan=${plan?.word ?? "-"}(${plan?.missing.length ?? 0})`,
   };
 }
 
@@ -488,6 +528,17 @@ export function decidePlays(d: Dictionary, view: MatchView, p: Params): Playable
     if (!best) break;
     const bloated = rackTotal(r) >= p.autoPlayRack;
     if (best.reward < p.autoPlayMinReward && !bloated && view.balance >= p.lowBalance) break;
+    // Worth waiting one tile for a much better word?
+    if (plays.length === 0 && !bloated && view.balance >= p.lowBalance && view.bagRemaining >= p.holdMinBag) {
+      let upgrade = 0;
+      for (const nw of nearWords(d, r, 1, p.minTargetLen, rackTotal(r) + 1)) {
+        if (nw.missing.length !== 1 || nw.reward < best.reward * p.holdRatio) continue;
+        const c = nw.missing[0]!;
+        const feas = pAppears(view.pool, view.bagRemaining, c, 0) * p.winProb;
+        if (feas >= p.holdFeas && nw.reward > upgrade) upgrade = nw.reward;
+      }
+      if (upgrade > 0) break;
+    }
     plays.push(best);
     r = rackRemoveWord(r, best.word);
   }
