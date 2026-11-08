@@ -127,6 +127,9 @@ export interface Params {
   // ranking and refresh it afterwards (see refreshDistribution), instead of
   // spending hundreds of milliseconds inside the auction window.
   allowStaleDistribution: boolean;
+  // Plan reward bias: words worth more than 35 count for more, cheap long
+  // words for less, so building aims at DRIVEWAY-class words.
+  rewardBias: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -183,6 +186,7 @@ export const DEFAULT_PARAMS: Params = {
   holdMinBag: 12,
   reserveMinReward: 33,
   allowStaleDistribution: false,
+  rewardBias: 0.012,
 };
 
 export function marketPrice(view: MatchView, p: Params, c: number): number {
@@ -253,7 +257,8 @@ export function evaluateRack(d: Dictionary, rack: Rack, view: MatchView, p: Para
     // Net of the coins the missing tiles will cost (at the match's
     // points-per-coin exchange rate); coins have no value at the end, but
     // spending them here means not spending them elsewhere.
-    const net = feas * (nw.reward - cost / p.coinsPerPoint);
+    const biased = nw.reward * (1 + p.rewardBias * (nw.reward - 35));
+    const net = feas * (biased - cost / p.coinsPerPoint);
     if (net > bestValue) {
       bestValue = net;
       best = { word: nw.word, reward: nw.reward, missing: nw.missing, feasibility: feas, net };
@@ -560,7 +565,10 @@ function decideSelective(d: Dictionary, c: number, view: MatchView, p: Params, b
   // Budget cap applies to every speculative bid, floors included: heavy
   // tiles may take a bit more of the purse, but never most of it.
   if (!completes && remaining > p.spendDownFrom) {
-    const share = LETTER_VALUE[c]! >= 5 ? 2.2 : 3;
+    // Letters worth 3+ are the efficient buys (9-30 points each in a long
+    // word); they may take a larger slice of the purse than filler.
+    const v = LETTER_VALUE[c]!;
+    const share = v >= 8 ? 1.8 : v >= 3 ? 2.2 : 3;
     const cap = Math.max(view.balance / share, Math.min(view.balance, p.winA + p.winB)) * Math.min(1, paceAdj);
     if (amount > cap) amount = cap;
   }
